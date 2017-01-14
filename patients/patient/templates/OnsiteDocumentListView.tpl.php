@@ -41,7 +41,7 @@
 				.script("scripts/libs/underscore-min.js")
 				.script("scripts/libs/underscore.date.min.js")
 				.script("scripts/libs/backbone-min.js")
-				.script("../assets/js/eModal.js")
+				.script("<?php echo $GLOBALS['assets_static_relative']; ?>/emodal-1-2-65/dist/eModal.js")
 				.script("scripts/app.js")
 				.script("scripts/model.js").wait()
 				.script("scripts/view.js").wait()

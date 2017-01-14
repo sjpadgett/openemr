@@ -418,7 +418,7 @@ body {
     font-weight: normal
 }
 </style>
-<script type="text/javascript" src="<?php echo $GLOBALS['webroot'] ?>/patients/assets/js/jquery.creditCardValidator.js"></script>
+<script type="text/javascript" src="<?php echo $GLOBALS['assets_static_relative']; ?>/jquery-creditcardvalidator-1-1-0/jquery.creditCardValidator.js"></script>
 <script type="text/javascript" src="<?php echo $GLOBALS['webroot'] ?>/library/textformat.js"></script>
 
 <script type="text/javascript">

@@ -338,8 +338,8 @@ foreach ( $result as $iter ) {
 
 	<script type='text/javascript' src="assets/js/jquery-1.11.3.min.js"></script>
 	<script type='text/javascript' src="assets/bootstrap/js/bootstrap.min.js"></script>
-	<script type='text/javascript' src="assets/js/angular-1.5.8.min.js"></script>
-	<script type='text/javascript' src="assets/js/angular-sanitize.min.js"></script>
+	<script type='text/javascript' src="<?php echo $GLOBALS['assets_static_relative']; ?>/angular-1-5-8/angular.min.js"></script>
+	<script type='text/javascript' src="<?php echo $GLOBALS['assets_static_relative']; ?>/angular-sanitize-1-5-8/angular-sanitize.min.js"></script>
 	<script type='text/javascript' src="assets/js/msgapp.js"></script>
 
 </body>
