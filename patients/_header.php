@@ -39,7 +39,7 @@
 <script src="assets/bootstrap/js/bootstrap.min.js" type="text/javascript"></script>
 <script src="sign/assets/signpad.js" type="text/javascript"></script>
 <script src="sign/assets/signer.js" type="text/javascript"></script>
-<script type="text/javascript" src="assets/js/eModal.js"></script>
+<script type="text/javascript" src="<?php echo $GLOBALS['assets_static_relative']; ?>/emodal-1-2-65/dist/eModal.js"></script>
 
 </head>
 <body class="skin-blue fixed">

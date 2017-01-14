@@ -69,8 +69,8 @@ function getTemplateList($dir){
 <link href="assets/css/style.css" rel="stylesheet" type="text/css" />
 <script src="assets/js/jquery-1.11.3.min.js" type="text/javascript"></script>
 <script src="assets/bootstrap/js/bootstrap.min.js" type="text/javascript"></script>
-<link rel="stylesheet" href="assets/medit/summernote.css" />
-<script type='text/javascript' src="assets/medit/summernote.js"></script>
+<link rel="stylesheet" href="<?php echo $GLOBALS['assets_static_relative']; ?>/summernote-0-8-2/dist/summernote.css" />
+<script type='text/javascript' src="<?php echo $GLOBALS['assets_static_relative']; ?>/summernote-0-8-2/dist/summernote.js"></script>
 </head>
 <script>
 var currentEdit = "";
