@@ -147,9 +147,10 @@ class UuidRegistry
         return $uuid;
     }
 
-    // Generic function to update all missing uuids (to be primarily used in service that is run intermittently; should not use anywhere else)
+    // Generic function to update all missing uuids (to be primarily used in service that is run intermittently in addition to upgrade/patch mechanism)
     // When add support for a new table uuid, need to add it here
     //  Will log by default
+    //  Will return log or false
     public static function populateAllMissingUuids($log = true)
     {
         $logEntryComment = '';
@@ -180,10 +181,20 @@ class UuidRegistry
         self::appendPopulateLog('procedure_result', (new UuidRegistry(['table_name' => 'procedure_result', 'table_id' => 'procedure_result_id']))->createMissingUuids(), $logEntryComment);
         self::appendPopulateLog('users', (new UuidRegistry(['table_name' => 'users']))->createMissingUuids(), $logEntryComment);
 
+        if (!empty($logEntryComment)) {
+            $logEntryComment = rtrim($logEntryComment, ', ');
+        }
+
         // log it
         if ($log && !empty($logEntryComment)) {
-            $logEntryComment = rtrim($logEntryComment, ', ');
             EventAuditLogger::instance()->newEvent('uuid', '', '', 1, 'Automatic uuid service creation: ' . $logEntryComment);
+        }
+
+        // return it
+        if (!empty($logEntryComment)) {
+            return $logEntryComment;
+        } else {
+            return false;
         }
     }
 
