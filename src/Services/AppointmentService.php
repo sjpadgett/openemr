@@ -16,6 +16,7 @@ namespace OpenEMR\Services;
 
 use MongoDB\Driver\Query;
 use OpenEMR\Common\Database\QueryUtils;
+use OpenEMR\Common\Logging\SystemLogger;
 use OpenEMR\Common\Uuid\UuidRegistry;
 use OpenEMR\Services\Search\DateSearchField;
 use OpenEMR\Services\Search\TokenSearchField;
@@ -344,7 +345,7 @@ class AppointmentService extends BaseService
             $trackerService = new PatientTrackerService();
             $trackerService->manage_tracker_status($appt['pc_eventDate'], $appt['pc_startTime'], $eid, $appt['pid'], $user, $status, $appt['pc_room'], $encounter);
         } else {
-            $this->getLogger()->error("AppointmentService->updateAppointmentStatus() failed to update manage_tracker_status"
+            (new SystemLogger())->error("AppointmentService->updateAppointmentStatus() failed to update manage_tracker_status"
             . " as patient pid was empty", ['pc_eid' => $eid, 'status' => $status, 'user' => $user, 'encounter' => $encounter]);
         }
         return QueryUtils::sqlStatementThrowException($sql, $binds);
