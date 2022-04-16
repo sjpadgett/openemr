@@ -10,46 +10,18 @@
 
 namespace OpenEMR\Services\Qdm\Services;
 
-use OpenEMR\Cqm\Qdm\BaseTypes\DateTime;
 use OpenEMR\Cqm\Qdm\DeviceOrder;
 use OpenEMR\Services\Qdm\Interfaces\QdmServiceInterface;
 
-class DeviceOrderService extends AbstractQdmService implements QdmServiceInterface
+class DeviceOrderService extends AbstractCarePlanService implements QdmServiceInterface
 {
-    public function getSqlStatement()
+    public function getCarePlanType()
     {
-        $sql = "SELECT
-                    O.patient_id AS pid,
-                    O.encounter_id AS encounter,
-                    O.procedure_order_type,
-                    O.date_ordered,
-                    OC.procedure_code
-                FROM procedure_order O
-                    JOIN procedure_order_code OC ON O.procedure_order_id = OC.procedure_order_id
-                WHERE O.procedure_order_type = 'device'
-                ";
-
-        return $sql;
+        return parent::CARE_PLAN_TYPE_DEVICE_ORDER;
     }
 
-    public function getPatientIdColumn()
+    public function getModelClass()
     {
-        return 'O.patient_id';
-    }
-
-    public function makeQdmModel(array $record)
-    {
-        $qdmModel = new DeviceOrder([
-            'relevantDatetime' => new DateTime([
-                'date' => $record['date_ordered']
-            ])
-        ]);
-
-        $codes = $this->explodeAndMakeCodeArray($record['procedure_code']);
-        foreach ($codes as $code) {
-            $qdmModel->addCode($code);
-        }
-
-        return $qdmModel;
+        return DeviceOrder::class;
     }
 }
