@@ -15,7 +15,6 @@ use OpenEMR\Services\Qdm\Interfaces\QdmRequestInterface;
 use OpenEMR\Services\Qdm\Interfaces\QdmServiceInterface;
 use OpenEMR\Services\Qdm\Services\AllergyIntoleranceService;
 use OpenEMR\Services\Qdm\Services\AssessmentService;
-use OpenEMR\Services\Qdm\Services\ConditionService;
 use OpenEMR\Services\Qdm\Services\DeviceAppliedService;
 use OpenEMR\Services\Qdm\Services\DiagnosisService;
 use OpenEMR\Services\Qdm\Services\DiagnosticStudyOrderedService;
@@ -33,6 +32,7 @@ use OpenEMR\Services\Qdm\Services\PhysicalExamService;
 use OpenEMR\Services\Qdm\Services\ProcedureRecommendedService;
 use OpenEMR\Services\Qdm\Services\ProcedureService;
 use OpenEMR\Services\Qdm\Services\SubstanceRecommendedService;
+use OpenEMR\Services\Qdm\Services\SymptomService;
 
 class QdmBuilder
 {
@@ -55,6 +55,7 @@ class QdmBuilder
         ProcedureService::class,
         ProcedureRecommendedService::class,
         SubstanceRecommendedService::class,
+        SymptomService::class,
     ];
 
     public function build(QdmRequestInterface $request): array
