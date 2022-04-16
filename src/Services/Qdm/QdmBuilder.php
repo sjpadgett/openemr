@@ -17,6 +17,7 @@ use OpenEMR\Services\Qdm\Services\AllergyIntoleranceService;
 use OpenEMR\Services\Qdm\Services\AssessmentService;
 use OpenEMR\Services\Qdm\Services\DeviceAppliedService;
 use OpenEMR\Services\Qdm\Services\DeviceOrderService;
+use OpenEMR\Services\Qdm\Services\DeviceRecommendedService;
 use OpenEMR\Services\Qdm\Services\DiagnosisService;
 use OpenEMR\Services\Qdm\Services\DiagnosticStudyOrderedService;
 use OpenEMR\Services\Qdm\Services\DiagnosticStudyService;
@@ -42,6 +43,7 @@ class QdmBuilder
         AssessmentService::class,
         DeviceAppliedService::class,
         DeviceOrderService::class,
+        DeviceRecommendedService::class,
         DiagnosisService::class,
         DiagnosticStudyService::class,
         DiagnosticStudyOrderedService::class,
