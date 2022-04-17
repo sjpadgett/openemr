@@ -10,7 +10,7 @@
 
 namespace OpenEMR\Services\Qdm\Services;
 
-use OpenEMR\Cqm\Qdm\DeviceApplied;
+use OpenEMR\Cqm\Qdm\DeviceOrder;
 use OpenEMR\Services\Qdm\Interfaces\QdmServiceInterface;
 
 class DeviceOrderService extends AbstractCarePlanService implements QdmServiceInterface
@@ -22,6 +22,6 @@ class DeviceOrderService extends AbstractCarePlanService implements QdmServiceIn
 
     public function getModelClass()
     {
-        return DeviceApplied::class;
+        return DeviceOrder::class;
     }
 }
