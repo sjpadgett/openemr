@@ -17,7 +17,7 @@ class DeviceRecommendedService extends AbstractCarePlanService implements QdmSer
 {
     public function getCarePlanType()
     {
-        return parent::CARE_PLAN_TYPE_DEVICE_ORDER;
+        return parent::CARE_PLAN_TYPE_DEVICE_RECOMMENDED;
     }
 
     public function getModelClass()
