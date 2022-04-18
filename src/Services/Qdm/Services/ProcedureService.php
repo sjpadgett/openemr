@@ -52,6 +52,9 @@ class ProcedureService extends AbstractQdmService implements QdmServiceInterface
             'relevantDatetime' => new DateTime([
                 'date' => $record['date_ordered']
             ]),
+            'authorDatetime' => new DateTime([
+                'date' => $record['date_ordered']
+            ])
         ]);
 
         if (!empty($record['result_value']) && !empty($record['result_units'])) {
