@@ -77,10 +77,6 @@ abstract class AbstractObservationService extends AbstractQdmService implements 
             }
         }
 
-        if (!empty($record['ob_code'])) {
-            $qdmModel->result = $this->makeQdmCode($record['ob_code']);
-        }
-
         $codes = $this->explodeAndMakeCodeArray($record['code']);
         foreach ($codes as $code) {
             $qdmModel->addCode($code);
