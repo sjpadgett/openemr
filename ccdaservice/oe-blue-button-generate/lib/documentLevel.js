@@ -92,6 +92,7 @@ exports.ccd2 = function (html_renderer) {
             headerLevel.headerInformant,
             headerLevel.headerCustodian,
             headerLevel.headerInformationRecipient,
+            headerLevel.participant,
             headerLevel.providers, {
                 key: "component",
                 content: {

@@ -2303,6 +2303,48 @@ function populateNote(pd) {
     };
 }
 
+function populateOfficeParticipant(participant) {
+    return {
+        "name": {
+            "prefix": participant.prefix || "",
+            "suffix": participant.suffix || "",
+            "middle": [participant.mname] || "",
+            "last": participant.lname || "",
+            "first": participant.fname || ""
+        },
+        "typeCode": "CALLBCK",
+        "classCode": "ASSIGNED",
+        "code": {
+            "name": participant.organization_taxonomy_description || "",
+            "code": cleanCode(participant.organization_taxonomy) || "",
+            "code_system": "2.16.840.1.113883.6.101",
+            "code_system_name": "NUCC Health Care Provider Taxonomy"
+        },
+        "identifiers": [{
+            "identifier": participant.organization_npi ? "2.16.840.1.113883.4.6" : participant.organization_id,
+            "extension": participant.organization_npi ? participant.organization_npi : ''
+        }],
+        "date_time": {
+            "point": {
+                "date": participant.date_time,
+                "precision": "tz"
+            }
+        },
+        "address": [
+            {
+                "street_lines": [
+                    participant.streetAddressLine
+                ],
+                "city": participant.city,
+                "state": participant.state,
+                "zip": participant.postalCode,
+                "country": participant.country || "US",
+                "use": "WP"
+            }
+        ],
+    }
+}
+
 function populateHeader(pd) {
     // default doc type ToC CCD
     let name = "Summarization of Episode Note";
@@ -2323,6 +2365,7 @@ function populateHeader(pd) {
             authorDateTime = all.encounter_list.encounter[0].date;
         }
     }
+
     const head = {
         "identifiers": [
             {
@@ -2341,7 +2384,9 @@ function populateHeader(pd) {
         },
         "title": name,
         "date_time": {
-            "date": fDate(pd.created_time_timezone),
+            // php already sends this in YYYYMMDDHHmmss(+/-)zzzz format
+            // so we can just take it straight away for the document head
+            "date": pd.created_time_timezone,
             "precision": "none"
         },
         "author": {
@@ -2452,7 +2497,7 @@ function populateHeader(pd) {
             "organization": {
                 "name": pd.information_recipient.organization || "org"
             },
-        },
+        }
         /*"data_enterer": {
             "identifiers": [
                 {
@@ -2611,6 +2656,13 @@ function populateHeader(pd) {
             ]
         }*/
     };
+    let participants = [];
+    if (pd.office_contact) {
+        participants.push(populateOfficeParticipant(pd.office_contact));
+    }
+    if (participants.length) {
+        head.participants = participants;
+    }
     return head;
 }
 

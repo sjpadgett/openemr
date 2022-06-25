@@ -26,11 +26,13 @@ use OpenEMR\Common\Logging\SystemLogger;
 use OpenEMR\Common\ORDataObject\ContactAddress;
 use OpenEMR\Common\Uuid\UuidRegistry;
 use OpenEMR\Services\ContactService;
+use OpenEMR\Services\EncounterService;
 use OpenEMR\Services\PatientService;
 use OpenEMR\Services\Search\DateSearchField;
 use OpenEMR\Services\Search\SearchComparator;
 use OpenEMR\Services\Search\SearchFieldStatementResolver;
 use OpenEMR\Services\Search\SearchQueryFragment;
+use OpenEMR\Validators\ProcessingResult;
 
 require_once(__DIR__ . "/../../../../../../../../custom/code_types.inc.php");
 require_once(__DIR__ . "/../../../../../../../forms/vitals/report.php");
@@ -390,8 +392,7 @@ class EncounterccdadispatchTable extends AbstractTableGateway
             }
             $details = $this->getDetails(intval($providerId));
         }
-        $time = $this->getCarecoordinationModuleSettingValue('hie_author_date');
-        $time = !empty($time) ? date('Y-m-d H:i:sO', strtotime($time)) : date('Y-m-d H:i:sO');
+        $time = $this->getAuthorDate($pid, $encounter);
         $uuid = UuidRegistry::uuidToString($details['uuid']);
 
         $author = "
@@ -410,6 +411,28 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         </author>";
 
         return $author;
+    }
+
+    public function getAuthorDate($pid, $encounter) {
+        // we allow providers to use the latest encounter date if they have the force flag set.
+        $time = null;
+        $setting = $this->getCarecoordinationModuleSettingValue('hie_force_latest_encounter_provenance_date');
+        if ($setting == 'yes') {
+            $encounter = $this->getLatestEncounter($pid);
+            if (!empty($encounter)) {
+                $encounterService = new EncounterService();
+                $encounterRecord = ProcessingResult::extractDataArray($encounterService->getEncounterById($encounter));
+                if (!empty($encounterRecord[0])) {
+                    $time = $encounterRecord[0]['date'];
+                }
+            }
+        }
+        if (empty($time)) {
+            $time = $this->getCarecoordinationModuleSettingValue('hie_author_date');
+        }
+
+        $time = !empty($time) ? date('Y-m-d H:i:sO', strtotime($time)) : date('Y-m-d H:i:sO');
+        return $time;
     }
 
     /**
@@ -461,6 +484,34 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         </informer>";
 
         return $informant;
+    }
+
+    public function getOfficeContact($pid, $encounter) {
+        $details = $this->getDetails('hie_office_contact');
+        if (empty($details)) {
+            return '';
+        } else {
+            $organization_uuid = UuidRegistry::uuidToString($details['facility_uuid']);
+        }
+
+        $time = $this->getAuthorDate($pid, $encounter);
+        $officeContact = "<office_contact>
+            <date_time>" . xmlEscape($time) . "</date_time>
+            <fname>" . xmlEscape($details['fname']) . "</fname>
+            <lname>" . xmlEscape($details['lname']) . "</lname>
+            <organization>" . xmlEscape($details['organization']) . "</organization>
+            <organization_id>" . xmlEscape($organization_uuid) . "</organization_id>
+            <organization_npi>" . xmlEscape($details['facility_npi']) . "</organization_npi>
+            <organization_taxonomy>" . xmlEscape($details['facility_taxonomy']) . "</organization_taxonomy>
+            <organization_taxonomy_desc>" . xmlEscape($details['facility_taxonomy_description']) . "</organization_taxonomy_desc>
+            <street>" . xmlEscape($details['street']) . "</street>
+            <city>" . xmlEscape($details['city']) . "</city>
+            <state>" . xmlEscape($details['state']) . "</state>
+            <zip>" . xmlEscape($details['zip']) . "</zip>
+            <phonew1>" . xmlEscape($details['phonew1']) . "</phonew1>
+        </office_contact>";
+
+        return $officeContact;
     }
 
     /**
@@ -2247,15 +2298,21 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         JOIN module_configuration AS conf ON conf.field_value=f.id AND mo.mod_id=conf.module_id
         WHERE conf.field_name=?";
         } elseif (is_string($field_name)) {
-            $query = "SELECT u.title, u.fname, u.mname, u.lname, u.npi, u.street, u.city, u.state, u.zip, CONCAT_WS(' ','',u.phonew1) AS phonew1, u.organization, u.specialty, conf.field_name, mo.mod_name, lo.title as  physician_type, SUBSTRING(lo.codes, LENGTH('SNOMED-CT:')+1, LENGTH(lo.codes)) as  physician_type_code, uuid
+            $query = "SELECT u.title, u.fname, u.mname, u.lname, u.npi, u.street, u.city, u.state, u.zip, CONCAT_WS(' ','',u.phonew1) AS phonew1, u.organization, u.specialty, conf.field_name, mo.mod_name, lo.title as  physician_type, SUBSTRING(lo.codes, LENGTH('SNOMED-CT:')+1, LENGTH(lo.codes)) as  physician_type_code, u.uuid
+            ,facility.facility_npi, facility.facility_taxonomy, lous.title as taxonomy_desc, facility.uuid AS facility_uuid
         FROM users AS u
         LEFT JOIN list_options AS lo ON lo.list_id = 'physician_type' AND lo.option_id = u.physician_type
+        LEFT JOIN facility ON u.facility_id = facility.id
+        LEFT JOIN list_options AS lous ON lous.list_id = 'us-core-provider-specialty' AND lous.option_id = facility.facility_taxonomy
         JOIN modules AS mo ON mo.mod_directory='Carecoordination'
         JOIN module_configuration AS conf ON conf.field_value=u.id AND mo.mod_id=conf.module_id
         WHERE conf.field_name=?";
         } elseif (is_int($field_name)) {
-            $query = "SELECT u.title, u.fname, u.mname, u.lname, u.npi, u.street, u.city, u.state, u.zip, CONCAT_WS(' ','',u.phonew1) AS phonew1, u.organization, u.specialty, lo.title as  physician_type, SUBSTRING(lo.codes, LENGTH('SNOMED-CT:')+1, LENGTH(lo.codes)) as  physician_type_code, uuid
+            $query = "SELECT u.title, u.fname, u.mname, u.lname, u.npi, u.street, u.city, u.state, u.zip, CONCAT_WS(' ','',u.phonew1) AS phonew1, u.organization, u.specialty, lo.title as  physician_type, SUBSTRING(lo.codes, LENGTH('SNOMED-CT:')+1, LENGTH(lo.codes)) as  physician_type_code, u.uuid
+        ,facility.facility_npi, facility.facility_taxonomy, lous.title as taxonomy_desc, facility.uuid AS facility_uuid
         FROM users AS u
+        LEFT JOIN facility ON u.facility_id = facility.id
+        LEFT JOIN list_options AS lous ON lous.list_id = 'us-core-provider-specialty' AND lous.option_id = facility.facility_taxonomy
         LEFT JOIN list_options AS lo ON lo.list_id = 'physician_type' AND lo.option_id = u.physician_type
         WHERE u.id=?";
         }
