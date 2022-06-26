@@ -2617,16 +2617,18 @@ limitations under the License.
         </xsl:if>
       </xsl:if>
       <!-- time zone. Don't try getting a name for it as that will always fail parts of the year due to daylight savings -->
-      <xsl:choose>
-        <xsl:when test="contains($date, '+')">
-          <xsl:text> +</xsl:text>
-          <xsl:value-of select="substring-after($date, '+')"/>
-        </xsl:when>
-        <xsl:when test="contains($date, '-')">
-          <xsl:text> -</xsl:text>
-          <xsl:value-of select="substring-after($date, '-')"/>
-        </xsl:when>
-      </xsl:choose>
+      <xsl:if test="(string-length($hh) &gt; 1 and not($hh = '00')) or (string-length($mm) &gt; 1 and not($mm = '00'))">
+        <xsl:choose>
+          <xsl:when test="contains($date, '+')">
+            <xsl:text> +</xsl:text>
+            <xsl:value-of select="substring-after($date, '+')"/>
+          </xsl:when>
+          <xsl:when test="contains($date, '-')">
+            <xsl:text> -</xsl:text>
+            <xsl:value-of select="substring-after($date, '-')"/>
+          </xsl:when>
+        </xsl:choose>
+      </xsl:if>
     </xsl:if>
   </xsl:template>
   <!-- convert to lower case -->

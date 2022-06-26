@@ -52,7 +52,7 @@ class CcdaServiceRequestModelGenerator
         return $this->createdtime;
     }
 
-    private function get_service_start_dates($pid, $encounter, $document_type, $date_options) {
+    private function getServiceStartDates($pid, $encounter, $document_type, $date_options) {
         $start = $date_options['date_start'];
         $end = $date_options['date_end'];
         $document_type = $document_type ?? "ccd"; // default to ccd
@@ -96,6 +96,15 @@ class CcdaServiceRequestModelGenerator
                 }
             }
         }
+        // TODO: this is the result of late night coding, hopefully we can come and fix this to be better in the future
+        // we essentially need to handle the fall through case where we have a date range that's been sent us
+        // that's not in our timestamp format
+        if (strpos($start, "-") !== false) {
+            $start = date('YmdHisO', strtotime($start));
+        }
+        if (strpos($end, "-") !== false) {
+            $end = date('YmdHisO', strtotime($end));
+        }
         return [
             'start' => $start ?? date('YmdHisO')
             ,'end' => $end ?? date('YmdHisO')
@@ -113,7 +122,7 @@ class CcdaServiceRequestModelGenerator
             $send = 0;
         }
 
-        $serviceStartDates = $this->get_service_start_dates($pid, $encounter, $document_type, $date_options);
+        $serviceStartDates = $this->getServiceStartDates($pid, $encounter, $document_type, $date_options);
 
         $sections_list = explode('|', $sections);
         $components_list = explode('|', $components);
