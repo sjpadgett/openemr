@@ -510,9 +510,14 @@ class EncounterccdadispatchTable extends AbstractTableGateway
             $organization_uuid = UuidRegistry::uuidToString($details['facility_uuid']);
         }
 
-        // TODO: get this working later
-//        $referralDate = DateFormatterUtils::dateStringToDateTime($referral['refer_date']);
-        $referralDate = date('YmdHisO');
+        // referral date does not follow the global date settings.  It saves off as Y-m-d so we need to format from there
+        $referralDate = \DateTime::createFromFormat("Y-m-d", $referral['refer_date']);
+        if ($referralDate === false) {
+            $referralDate = date('Y-m-d H:i:sO');
+        } else {
+            $referralDate = $referralDate->format('Y-m-d H:i:sO'); // we get it in the right format even though we have no time element...
+        }
+//        $referralDate = date('YmdHisO');
         $participant = "<participant>
             <date_time>" . xmlEscape($referralDate) . "</date_time>
             <fname>" . xmlEscape($details['fname']) . "</fname>

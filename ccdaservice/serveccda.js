@@ -2389,10 +2389,10 @@ function populateHeader(pd) {
         },
         "title": name,
         "date_time": {
-            // php already sends this in YYYYMMDDHHmmss(+/-)zzzz format
-            // so we can just take it straight away for the document head
-            "date": pd.created_time_timezone,
-            "precision": "none"
+            "point": {
+                "date": fDate(pd.created_time_timezone),
+                "precision": "tz"
+            }
         },
         "author": {
             "date_time": {
