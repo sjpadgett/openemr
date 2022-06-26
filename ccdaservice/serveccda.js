@@ -2344,7 +2344,7 @@ function populateParticipant(participant) {
         "address": [
             {
                 "street_lines": [
-                    participant.streetAddressLine
+                    participant.street
                 ],
                 "city": participant.city,
                 "state": participant.state,

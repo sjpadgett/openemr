@@ -530,7 +530,7 @@ class EncounterccdadispatchTable extends AbstractTableGateway
             <street>" . xmlEscape($details['street']) . "</street>
             <city>" . xmlEscape($details['city']) . "</city>
             <state>" . xmlEscape($details['state']) . "</state>
-            <zip>" . xmlEscape($details['zip']) . "</zip>
+            <postalCode>" . xmlEscape($details['zip']) . "</postalCode>
             <phonew1>" . xmlEscape($details['phonew1']) . "</phonew1>
             <address_use>WP</address_use>
             <type>REFB</type>
@@ -561,7 +561,7 @@ class EncounterccdadispatchTable extends AbstractTableGateway
             <street>" . xmlEscape($details['street']) . "</street>
             <city>" . xmlEscape($details['city']) . "</city>
             <state>" . xmlEscape($details['state']) . "</state>
-            <zip>" . xmlEscape($details['zip']) . "</zip>
+            <postalCode>" . xmlEscape($details['zip']) . "</postalCode>
             <phonew1>" . xmlEscape($details['phonew1']) . "</phonew1>
             <address_use>WP</address_use>
             <type>CALLBCK</type>
