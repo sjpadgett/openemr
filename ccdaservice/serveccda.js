@@ -2335,6 +2335,12 @@ function populateParticipant(participant) {
                 "precision": "tz"
             }
         },
+        "phone": [
+            {
+                "number": participant.phonew1 || "",
+                "type": "WP"
+            }
+        ],
         "address": [
             {
                 "street_lines": [
