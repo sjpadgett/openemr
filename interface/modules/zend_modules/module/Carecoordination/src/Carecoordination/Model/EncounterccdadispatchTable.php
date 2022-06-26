@@ -32,6 +32,7 @@ use OpenEMR\Services\Search\DateSearchField;
 use OpenEMR\Services\Search\SearchComparator;
 use OpenEMR\Services\Search\SearchFieldStatementResolver;
 use OpenEMR\Services\Search\SearchQueryFragment;
+use OpenEMR\Services\Utils\DateFormatterUtils;
 use OpenEMR\Validators\ProcessingResult;
 
 require_once(__DIR__ . "/../../../../../../../../custom/code_types.inc.php");
@@ -486,6 +487,54 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         return $informant;
     }
 
+    public function getDocumentParticipants($pid, $encounter) {
+
+        $participants = '<document_participants>';
+        $participants .= $this->getDocumentReferralParticipant($pid, $encounter);
+        $participants .= $this->getOfficeContact($pid, $encounter);
+        $participants .= '</document_participants>';
+        return $participants;
+    }
+
+    public function getDocumentReferralParticipant($pid, $encounter) {
+        $participant = '';
+        $records = $this->getReferralRecords($pid);
+        if (empty($records[0]['refer_from']) || !is_numeric($records[0]['refer_from'])) {
+            return $participant;
+        }
+        $referral = $records[0];
+        $details = $this->getDetails(intval($referral['refer_from']));
+        if (empty($details)) {
+            return '';
+        } else {
+            $organization_uuid = UuidRegistry::uuidToString($details['facility_uuid']);
+        }
+
+        // TODO: get this working later
+//        $referralDate = DateFormatterUtils::dateStringToDateTime($referral['refer_date']);
+        $referralDate = date('YmdHisO');
+        $participant = "<participant>
+            <date_time>" . xmlEscape($referralDate) . "</date_time>
+            <fname>" . xmlEscape($details['fname']) . "</fname>
+            <lname>" . xmlEscape($details['lname']) . "</lname>
+            <organization>" . xmlEscape($details['organization']) . "</organization>
+            <organization_id>" . xmlEscape($organization_uuid) . "</organization_id>
+            <organization_npi>" . xmlEscape($details['facility_npi']) . "</organization_npi>506:1
+            <organization_taxonomy>" . xmlEscape($details['facility_taxonomy']) . "</organization_taxonomy>
+            <organization_taxonomy_desc>" . xmlEscape($details['facility_taxonomy_description']) . "</organization_taxonomy_desc>
+            <street>" . xmlEscape($details['street']) . "</street>
+            <city>" . xmlEscape($details['city']) . "</city>
+            <state>" . xmlEscape($details['state']) . "</state>
+            <zip>" . xmlEscape($details['zip']) . "</zip>
+            <phonew1>" . xmlEscape($details['phonew1']) . "</phonew1>
+            <address_use>WP</address_use>
+            <type>REFB</type>
+            
+        </participant>";
+
+        return $participant;
+    }
+
     public function getOfficeContact($pid, $encounter) {
         $details = $this->getDetails('hie_office_contact');
         if (empty($details)) {
@@ -495,7 +544,7 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         }
 
         $time = $this->getAuthorDate($pid, $encounter);
-        $officeContact = "<office_contact>
+        $officeContact = "<participant>
             <date_time>" . xmlEscape($time) . "</date_time>
             <fname>" . xmlEscape($details['fname']) . "</fname>
             <lname>" . xmlEscape($details['lname']) . "</lname>
@@ -509,7 +558,9 @@ class EncounterccdadispatchTable extends AbstractTableGateway
             <state>" . xmlEscape($details['state']) . "</state>
             <zip>" . xmlEscape($details['zip']) . "</zip>
             <phonew1>" . xmlEscape($details['phonew1']) . "</phonew1>
-        </office_contact>";
+            <address_use>WP</address_use>
+            <type>CALLBCK</type>
+        </participant>";
 
         return $officeContact;
     }
@@ -3388,16 +3439,12 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         return $clinical_instructions;
     }
 
-    /**
-     * @param $pid
-     * @return string
-     */
-    public function getReferrals($pid)
-    {
+    private function getReferralRecords($pid) {
         $wherCon = '';
         $sqlBindArray = [$pid];
         if ($this->searchFiltered) {
-            $queryClause = $this->getDateQueryClauseForColumn('date');
+            // TODO: @adunsulag for our g9 queries we need to handle this query manually as the referral date is actually a string value in the column
+            $queryClause = $this->getDateQueryClauseForColumn('t.date');
             if (!empty($queryClause->getFragment())) {
                 $wherCon .= " AND " . $queryClause->getFragment() . " ";
                 $sqlBindArray = array_merge($sqlBindArray, $queryClause->getBoundValues());
@@ -3406,13 +3453,39 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         $wherCon .= "ORDER BY date DESC LIMIT 1";
 
         $appTable = new ApplicationTable();
-        $query = "SELECT field_value, date FROM transactions JOIN lbt_data ON form_id=id AND field_id = 'body' WHERE pid = ? $wherCon";
+        $query = "SELECT ref_body.field_value AS body, ref_to.field_value AS refer_to
+                    , ref_from.field_value AS refer_from, ref_billing_facility_id.field_value AS billing_facility_id
+                    , t.date AS creation_date, ref_date.field_value AS refer_date
+                    FROM transactions t
+                        JOIN lbt_data ref_body ON ref_body.form_id=t.id AND ref_body.field_id = 'body'
+                        JOIN lbt_data ref_to ON ref_to.form_id=t.id AND ref_to.field_id = 'refer_to'
+                        JOIN lbt_data ref_date ON ref_date.form_id=t.id AND ref_date.field_id = 'refer_date'
+                        JOIN lbt_data ref_from ON ref_from.form_id=t.id AND ref_from.field_id = 'refer_from'
+                        JOIN lbt_data ref_billing_facility_id ON ref_billing_facility_id.form_id=t.id 
+                            AND ref_billing_facility_id.field_id = 'billing_facility_id'
+                    WHERE pid = ? $wherCon";
 
         $result = $appTable->zQuery($query, $sqlBindArray);
+        $records = [];
+        foreach ($result as $row) {
+            // TODO: we can do our date filtering here eventually
+            $records[] = $row;
+        }
+        return $records;
+    }
+
+    /**
+     * @param $pid
+     * @return string
+     */
+    public function getReferrals($pid)
+    {
+        $referrals = '';
+        $result = $this->getReferralRecords($pid);
         $referrals = '<referral_reason>';
         foreach ($result as $row) {
-            $referrals .= '<text>' . xmlEscape($row['field_value']) . '</text>
-                           <date>' . xmlEscape($row['date']) . '</date>';
+            $referrals .= '<text>' . xmlEscape($row['body']) . '</text>
+                           <date>' . xmlEscape($row['refer_date']) . '</date>';
         }
 
         $referrals .= '</referral_reason>';

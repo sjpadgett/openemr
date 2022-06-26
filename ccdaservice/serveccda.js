@@ -2308,7 +2308,7 @@ function populateNote(pd) {
     };
 }
 
-function populateOfficeParticipant(participant) {
+function populateParticipant(participant) {
     return {
         "name": {
             "prefix": participant.prefix || "",
@@ -2317,7 +2317,7 @@ function populateOfficeParticipant(participant) {
             "last": participant.lname || "",
             "first": participant.fname || ""
         },
-        "typeCode": "CALLBCK",
+        "typeCode": participant.type || "",
         "classCode": "ASSIGNED",
         "code": {
             "name": participant.organization_taxonomy_description || "",
@@ -2344,7 +2344,7 @@ function populateOfficeParticipant(participant) {
                 "state": participant.state,
                 "zip": participant.postalCode,
                 "country": participant.country || "US",
-                "use": "WP"
+                "use": participant.address_use || "WP"
             }
         ],
     }
@@ -2662,9 +2662,22 @@ function populateHeader(pd) {
         }*/
     };
     let participants = [];
-    if (pd.office_contact) {
-        participants.push(populateOfficeParticipant(pd.office_contact));
+    let docParticipants = pd.document_participants || {participant: []};
+    let count = 0;
+    try {
+        count = isOne(docParticipants.participant);
+    } catch (e) {
+        count = 0
     }
+    if (count == 1) {
+        participants = [populateParticipant(docParticipants.participant)];
+    } else {
+        // grab the values of our object
+        participants = Object.values(docParticipants.participant)
+                        .filter(pcpt => pcpt.type)
+                        .map(pcpt => populateParticipant(pcpt));
+    }
+
     if (participants.length) {
         head.participants = participants;
     }
