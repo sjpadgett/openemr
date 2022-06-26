@@ -3447,15 +3447,7 @@ class EncounterccdadispatchTable extends AbstractTableGateway
     private function getReferralRecords($pid) {
         $wherCon = '';
         $sqlBindArray = [$pid];
-        if ($this->searchFiltered) {
-            // TODO: @adunsulag for our g9 queries we need to handle this query manually as the referral date is actually a string value in the column
-            $queryClause = $this->getDateQueryClauseForColumn('t.date');
-            if (!empty($queryClause->getFragment())) {
-                $wherCon .= " AND " . $queryClause->getFragment() . " ";
-                $sqlBindArray = array_merge($sqlBindArray, $queryClause->getBoundValues());
-            }
-        }
-        $wherCon .= "ORDER BY date DESC LIMIT 1";
+        $wherCon .= "ORDER BY date DESC";
 
         $appTable = new ApplicationTable();
         $query = "SELECT ref_body.field_value AS body, ref_to.field_value AS refer_to
@@ -3473,7 +3465,21 @@ class EncounterccdadispatchTable extends AbstractTableGateway
         $result = $appTable->zQuery($query, $sqlBindArray);
         $records = [];
         foreach ($result as $row) {
-            // TODO: we can do our date filtering here eventually
+            // because of the way transactions store dates as string and we don't have a cross data base compliant way of
+            // converting fields to dates we have to sort the dates in the application layer.
+            if ($this->searchFiltered) {
+                $rowDate = strtotime($row['refer_date']);
+                // if we can't format the date and we are filtering then we exclude it,
+                if (
+                    $rowDate === false
+                    // we have a from date so we filter by it
+                    || (isset($this->searchFromDate) && $rowDate < $this->searchFromDate)
+                    // we have a to date so we filter by it
+                    || (isset($this->searchToDate) && $rowDate > $this->searchToDate)
+                ) {
+                    continue;
+                }
+            }
             $records[] = $row;
         }
         return $records;
@@ -3487,14 +3493,15 @@ class EncounterccdadispatchTable extends AbstractTableGateway
     {
         $referrals = '';
         $result = $this->getReferralRecords($pid);
-        $referrals = '<referral_reason>';
-        foreach ($result as $row) {
-            $referrals .= '<text>' . xmlEscape($row['body']) . '</text>
-                           <date>' . xmlEscape($row['refer_date']) . '</date>';
+        $referralsXML = '<referral_reason>';
+        if (!empty($result[0])) {
+            $referral = $result[0];
+            $referralsXML .= '<text>' . xmlEscape($referral['body']) . '</text>
+                           <date>' . xmlEscape($referral['refer_date']) . '</date>';
         }
 
-        $referrals .= '</referral_reason>';
-        return $referrals;
+        $referralsXML .= '</referral_reason>';
+        return $referralsXML;
     }
 
     /**
