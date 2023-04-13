@@ -87,7 +87,7 @@ class TeleHealthParticipantInvitationMailerService
         $logoPath = $this->config->getQualifiedSiteAddress() . $logoService->getLogo('core/login/primary');
         $name = $this->config->getOpenEMRName();
         $data = [
-            'url' => $this->getJoinLink($patient)
+            'url' => $this->getJoinLink($patient, $session, $thirdPartyLaunchAction)
             ,'pc_eid' => $session['pc_eid']
             ,'launchAction' => $thirdPartyLaunchAction
             ,'salutation' => ($patient['fname'] ?? '') . ' ' . ($patient['lname'] ?? '')
@@ -98,7 +98,7 @@ class TeleHealthParticipantInvitationMailerService
         return $data;
     }
 
-    private function getJoinLink($patient)
+    private function getJoinLink($patient, $session, $thirdPartyLaunchAction)
     {
         /**
          * $p[
@@ -113,7 +113,8 @@ class TeleHealthParticipantInvitationMailerService
         if ($this->config->isOneTimePasswordLoginEnabled()) {
             $parameters = [
                 'pid' => $patient['pid']
-                ,'redirect_link' => $this->publicPathFQDN . "index-portal.php"
+                ,'redirect_link' => $this->publicPathFQDN . "index-portal.php?action=" . urlencode($thirdPartyLaunchAction)
+                    . "&pc_eid=" . urlencode($session['pc_eid'])
                 ,'email' => $patient['email']
             ];
             $service = new OneTimeAuth();
@@ -126,7 +127,8 @@ class TeleHealthParticipantInvitationMailerService
             }
         } else {
             // the index-portal will redirect the person to login before completing the action
-            return $this->publicPathFQDN . "index-portal.php";
+            return $this->publicPathFQDN . "index-portal.php?action=" . urlencode($thirdPartyLaunchAction)
+                . "&pc_eid=" . urlencode($session['pc_eid']);
         }
 
         return $oneTime;
