@@ -109,7 +109,12 @@ class TelehealthGlobalConfig
     }
 
     public function isOneTimePasswordLoginEnabled() {
-        return $this->getGlobalSetting(self::COMLINK_ONETIME_PASSWORD_LOGIN);
+        $setting = $this->getGlobalSetting(self::COMLINK_ONETIME_PASSWORD_LOGIN);
+        if ($setting === null) {
+            return true; // TODO: @adunsulag change this to false once we have a way to disable this feature
+        } else {
+            return $setting;
+        }
     }
 
     public function getFHIRPath()
