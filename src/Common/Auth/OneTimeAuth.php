@@ -332,6 +332,7 @@ class OneTimeAuth
         $_SESSION['username'] = $auth['username'];
         $_SESSION['login_username'] = $auth['login_username'];
         $_SESSION['onetime'] = $auth['portal_pwd'];
+        $_SESSION['patient_portal_onsite_two'] = 1;
 
         header('Location: ' . $auth['redirect']);
 
