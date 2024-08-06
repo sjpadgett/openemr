@@ -63,12 +63,12 @@ $alternate_pharmacy = ($alt_pharmacy['business_name'] ?? false) ? ($alt_pharmacy
 ($alt_pharmacy['address_line_1'] ?? '') . ' ' . ($alt_pharmacy['city'] ?? '') .
 ', ' . $alt_pharmacy['state'] ?? '') : '';
 
-$res = sqlStatement(
+$resPharm = sqlStatement(
     "SELECT DISTINCT wp.ncpdp_safe, wp.business_name, wp.address_line_1, wp.city, wp.state FROM weno_assigned_pharmacy wap INNER JOIN weno_pharmacy wp ON wap.primary_ncpdp = wp.ncpdp_safe OR wap.alternate_ncpdp = wp.ncpdp_safe;
 "
 );
 $pharmacies = array();
-foreach ($res as $row) {
+foreach ($resPharm as $row) {
     $pharmacies[] = $row;
 }
 $pharmacyCount = count($pharmacies);
