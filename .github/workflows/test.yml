@@ -177,7 +177,7 @@ jobs:
           ${{ runner.os }}-composer-
 
     - name: Install npm package
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@v6
       with:
         node-version: ${{ matrix.configurations.node_version }}
 
@@ -247,6 +247,17 @@ jobs:
         . ci/ciLibrary.source
         install_configure
 
+    - name: PHP info
+      run: |
+        curl -fsSL phpinfo.html http://localhost/ci/phpinfo.php | tee phpinfo.html
+
+    - name: Upload PHP info to GitHub
+      uses: actions/upload-artifact@v4
+      if: ${{ hashFiles('phpinfo.html') != '' }}
+      with:
+        name: phpinfo-${{ matrix.configurations.docker_dir }}.html
+        path: phpinfo.html
+
     - name: Prepare for coverage reporting
       if: ${{ env.ENABLE_COVERAGE == 'true' }}
       run: |
@@ -277,6 +288,8 @@ jobs:
 
     - name: Api testing
       if: ${{ success() || failure() }}
+      env:
+        ENABLE_COVERAGE: 'false'
       run: |
         . ci/ciLibrary.source
         build_test api
@@ -437,9 +450,37 @@ jobs:
       env:
         # Change this to just 'selenium' to disable video recording.
         COMPOSE_PROFILES: video-recording
+        ENABLE_COVERAGE: 'false'
       run: |
         . ci/ciLibrary.source
         build_test e2e
+
+    ##
+    # The logs for the e2e run are directly in the container logs for nginx/php-fpm
+    # but in /var/log/apache2/error.log for apache.
+    - name: E2e container logs
+      if: ${{ (success() || failure()) && matrix.configurations.e2e_enabled == 'true' }}
+      run: |
+        . ci/ciLibrary.source
+        dc logs openemr
+
+    - name: E2e error logs
+      if: ${{ (success() || failure()) && matrix.configurations.e2e_enabled == 'true' && matrix.configurations.webserver == 'apache' }}
+      run: |
+        . ci/ciLibrary.source
+        dump_error_log ${{ matrix.configurations.webserver }}
+
+    - name: E2e selenium logs
+      if: ${{ (success() || failure()) && matrix.configurations.e2e_enabled == 'true' }}
+      run: |
+        . ci/ciLibrary.source
+        dc logs selenium
+
+    - name: E2e video logs
+      if: ${{ (success() || failure()) && matrix.configurations.e2e_enabled == 'true' }}
+      run: |
+        . ci/ciLibrary.source
+        dc logs video
 
     - name: Upload e2e test results to Codecov
       if: ${{ !cancelled() && hashFiles('junit-e2e.xml') != '' }}

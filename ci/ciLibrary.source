@@ -59,7 +59,7 @@ _exec() {
 }
 
 dockers_env_start() {
-    dc up --detach --wait --wait-timeout 300
+    dc up --detach --quiet-pull --wait --wait-timeout 300
 }
 
 selenium_video_start() {
@@ -70,8 +70,6 @@ selenium_video_start() {
 
 selenium_video_stop() {
     dc stop selenium video
-    dc logs selenium
-    dc logs video
 }
 
 actions_chmod() {
@@ -134,11 +132,27 @@ install_configure() {
     _exec mysql -u openemr --password=openemr --ssl=false -h mysql -e 'UPDATE globals SET gl_value = 1 WHERE gl_name = "rest_system_scopes_api"' openemr
 }
 
+enable_e2e_coverage() {
+    echo 'not implemented' >&2
+    false
+}
+
 build_test_e2e() {
     echo 'Creating selenium-videos directory…'
     mkdir -p selenium-videos
     # Fix permissions for video recording
     actions_chmod 777 selenium-videos
+
+    # Enable E2E coverage collection if coverage is enabled
+    if [[ ${ENABLE_COVERAGE:-false} = true ]]; then
+        echo 'Enabling E2E coverage collection…'
+        enable_e2e_coverage
+
+        # Increase Selenium timeouts when coverage is enabled (coverage slows down page loads)
+        export SELENIUM_IMPLICIT_WAIT=90
+        export SELENIUM_PAGE_LOAD_TIMEOUT=180
+        echo "Selenium timeouts increased: implicit_wait=${SELENIUM_IMPLICIT_WAIT}s, page_load_timeout=${SELENIUM_PAGE_LOAD_TIMEOUT}s"
+    fi
 
     selenium_video_start
     echo 'Checking if selenium container is running…'
@@ -194,6 +208,23 @@ build_test_e2e() {
     fi
 
     return "${status}"
+}
+
+##
+# Print the webserver error log
+dump_error_log() {
+    case "$1" in
+        apache)
+            _exec sh -c 'test -r /var/log/apache2/error.log && cat /var/log/apache2/error.log'
+            ;;
+        nginx)
+            echo 'php-fpm logs are in the container logs'
+            ;;
+        *)
+            echo "Webserver '$1' not known."
+            exit 255
+            ;;
+    esac
 }
 
 ##
