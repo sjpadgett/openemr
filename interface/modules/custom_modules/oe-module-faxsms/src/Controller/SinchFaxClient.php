@@ -36,7 +36,9 @@ declare(strict_types=1);
 namespace OpenEMR\Modules\FaxSMS\Controller;
 
 use OpenEMR\BC\ServiceContainer;
+use OpenEMR\Common\Crypto\CryptoGenException;
 use OpenEMR\Common\Crypto\CryptoInterface;
+use OpenEMR\Common\Http\CurrentRequest;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxChannelInterface;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxDocumentDisposalInterface;
@@ -112,7 +114,7 @@ class SinchFaxClient extends AppDispatch implements
             if ($this->projectId !== '' && $this->keyId !== '' && $this->keySecret !== '') {
                 $this->client = new Client($this->projectId, $this->keyId, $this->keySecret);
             }
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error(
                 'Sinch fax client initialization failed',
                 ['exception' => $e]
@@ -255,7 +257,7 @@ class SinchFaxClient extends AppDispatch implements
             // patient, so a request-supplied id cannot reach arbitrary rows.
             try {
                 $file = $this->readAuthorizedFaxDocument(is_scalar($docId) ? (int)$docId : 0);
-            } catch (\Throwable $e) {
+            } catch (\RuntimeException $e) {
                 ServiceContainer::getLogger()->warning(
                     'Sinch sendFax could not read the requested patient document',
                     ['exception' => $e]
@@ -319,7 +321,7 @@ class SinchFaxClient extends AppDispatch implements
             }
 
             return xlt('Fax Successfully Sent') . ($error ? ('<br />' . xlt('Email Failed')) : '');
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException | CryptoGenException $e) {
             ServiceContainer::getLogger()->error('Sinch fax send failed', ['exception' => $e]);
             return xlt('Error: The fax could not be sent.');
         } finally {
@@ -495,7 +497,7 @@ class SinchFaxClient extends AppDispatch implements
                 ['createTimeFrom' => gmdate('Y-m-d\TH:i:s\Z', (int)(strtotime("-{$sinceDays} days") ?: time()))],
                 self::FAX_LIST_LIMIT
             );
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error('Sinch inbound ingest could not list faxes', ['exception' => $e]);
 
             return 0;
@@ -529,7 +531,7 @@ class SinchFaxClient extends AppDispatch implements
                 $payload = $this->toInboundPayload($fax, $isInbound);
                 $documents->insertInboundFaxToQueue($this->toQueueRecord($payload), $account);
                 $ingested++;
-            } catch (\Throwable $e) {
+            } catch (\RuntimeException $e) {
                 // One bad fax must not abort the sweep.
                 ServiceContainer::getLogger()->error('Sinch ingest failed for a fax', [
                     'exception' => $e,
@@ -642,7 +644,7 @@ class SinchFaxClient extends AppDispatch implements
             }
 
             return (string)json_encode(['count' => $count]);
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error('Sinch reminder count failed', ['exception' => $e]);
 
             return (string)json_encode(['count' => 0]);
@@ -723,7 +725,7 @@ class SinchFaxClient extends AppDispatch implements
                 'mime' => 'application/pdf',
                 'filename' => 'Fax_' . $faxId . '.pdf',
             ]);
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException | CryptoGenException $e) {
             ServiceContainer::getLogger()->error('Sinch viewFax failed', ['exception' => $e, 'faxId' => $faxId]);
 
             return (string)json_encode(['error' => xlt('Error retrieving fax')]);
@@ -798,7 +800,7 @@ class SinchFaxClient extends AppDispatch implements
                 'success' => true,
                 'document_id' => $result['document_id'] ?? null,
             ]);
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error('Sinch assignFax failed', ['exception' => $e, 'faxId' => $faxId]);
 
             return (string)json_encode(['error' => xlt('Failed to assign fax')]);
@@ -893,7 +895,7 @@ class SinchFaxClient extends AppDispatch implements
 
                 $responseMsg[0] .= $cells . text($status) . '</td><td class="text-left">' . $actions . '</td></tr>';
             }
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error('Sinch getPending failed', ['exception' => $e]);
         }
 
@@ -948,7 +950,7 @@ class SinchFaxClient extends AppDispatch implements
         }
         try {
             return $this->client->fax->v3->faxes->getContext($faxId)->downloadContent();
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error('Sinch fax download failed', ['exception' => $e, 'faxId' => $faxId]);
 
             return null;
@@ -967,7 +969,7 @@ class SinchFaxClient extends AppDispatch implements
         }
         try {
             return $this->client->fax->v3->faxes->getContext($faxId)->deleteContent();
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             ServiceContainer::getLogger()->error(
                 'Sinch fax content release failed',
                 ['exception' => $e, 'faxId' => $faxId]
@@ -987,7 +989,7 @@ class SinchFaxClient extends AppDispatch implements
      */
     public function faxProcessUploads(): string
     {
-        $upload = $_FILES['fax'] ?? null;
+        $upload = CurrentRequest::get()->files->get('fax');
 
         return is_array($upload)
             ? $this->uploadStaging->processUpload($this->baseDir, $upload)

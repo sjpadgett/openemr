@@ -102,7 +102,7 @@ final readonly class InboundFaxReceiver
             ]);
 
             return self::RESULT_ACCEPTED;
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             $this->logger->error('Inbound fax webhook ingest failed', [
                 'exception' => $e,
                 'faxId' => $payload->faxId,
@@ -144,7 +144,7 @@ final readonly class InboundFaxReceiver
                 return;
             }
             $this->documents->updateFaxStatus($payload->faxId, $payload->status);
-        } catch (\Throwable $e) {
+        } catch (\RuntimeException $e) {
             $this->logger->warning('Could not record outbound fax status from webhook', [
                 'exception' => $e,
                 'faxId' => $payload->faxId,

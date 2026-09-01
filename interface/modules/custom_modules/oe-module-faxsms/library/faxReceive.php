@@ -36,6 +36,7 @@ for ($oeUp = 0; $oeUp < 8 && !is_file($oeBootstrap . '/globals.php'); $oeUp++) {
 require_once($oeBootstrap . '/globals.php');
 
 use OpenEMR\BC\ServiceContainer;
+use OpenEMR\Common\Http\CurrentRequest;
 use OpenEMR\Modules\FaxSMS\Controller\SinchFaxClient;
 use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxReceiver;
 use OpenEMR\Modules\FaxSMS\Webhook\WebhookRequestContext;
@@ -46,9 +47,11 @@ ini_set('display_errors', '0');
 /**
  * Answer with a bare status code and stop. No body, ever: the caller is a
  * machine and a prober must not be able to distinguish failure modes.
+ *
+ * A closure rather than a named function so nothing is declared in the global
+ * namespace from a web-reachable script.
  */
-function oeFaxWebhookRespond(int $status): never
-{
+$respond = static function (int $status): never {
     while (ob_get_level() > 0) {
         ob_end_clean();
     }
@@ -56,41 +59,45 @@ function oeFaxWebhookRespond(int $status): never
     header('Content-Length: 0');
     header('Cache-Control: no-store');
     exit;
-}
+};
 
-if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-    oeFaxWebhookRespond(405);
+// Read request state through the process-wide request object rather than the
+// superglobals, so this entry point follows the same input contract as the
+// rest of the module.
+$request = CurrentRequest::get();
+
+if ($request->getMethod() !== 'POST') {
+    $respond(405);
 }
 
 // Bound what we are willing to read before touching it. A fax document is
 // large but not unbounded, and the vendor is not trusted to be well-behaved.
 $maxBytes = 60 * 1024 * 1024;
-$declaredLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
-if ($declaredLength > $maxBytes) {
-    oeFaxWebhookRespond(413);
+if ($request->server->getInt('CONTENT_LENGTH') > $maxBytes) {
+    $respond(413);
 }
 
-$contentType = (string)($_SERVER['CONTENT_TYPE'] ?? '');
+$contentType = (string)$request->headers->get('Content-Type', '');
 $isMultipart = str_contains(strtolower($contentType), 'multipart/');
 
-// PHP has already consumed a multipart body into $_POST/$_FILES; anything else
-// has to be read from the input stream, under the same cap.
+// PHP has already consumed a multipart body into the request's bags; anything
+// else has to be read from the input stream, under the same cap.
 $rawBody = '';
 if (!$isMultipart) {
     $rawBody = (string)file_get_contents('php://input', false, null, 0, $maxBytes + 1);
     if (strlen($rawBody) > $maxBytes) {
-        oeFaxWebhookRespond(413);
+        $respond(413);
     }
 }
 
 $context = new WebhookRequestContext(
-    secret: (string)($_GET['secret'] ?? ''),
-    authorizationHeader: (string)($_SERVER['HTTP_AUTHORIZATION'] ?? ''),
-    remoteIp: (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+    secret: $request->query->getString('secret'),
+    authorizationHeader: (string)$request->headers->get('Authorization', ''),
+    remoteIp: (string)$request->getClientIp(),
     contentType: $contentType,
     rawBody: $rawBody,
-    formFields: $isMultipart && is_array($_POST) ? $_POST : [],
-    files: $isMultipart && is_array($_FILES) ? $_FILES : [],
+    formFields: $isMultipart ? $request->request->all() : [],
+    files: $isMultipart ? $request->files->all() : [],
 );
 
 try {
@@ -98,18 +105,20 @@ try {
     // webhook mode. Everything else is indistinguishable from "no endpoint".
     $receiver = SinchFaxClient::createWebhookReceiver();
     if (!$receiver instanceof InboundFaxReceiver) {
-        oeFaxWebhookRespond(404);
+        $respond(404);
     }
 
     $result = $receiver->handle($context);
-} catch (Throwable $e) {
+} catch (RuntimeException $e) {
+    // Deliberately not \Throwable: an \Error here is a bug in this code, and
+    // reporting it as a retryable 500 to the vendor would bury it.
     ServiceContainer::getLogger()->error('Inbound fax webhook endpoint failed', ['exception' => $e]);
-    oeFaxWebhookRespond(500);
+    $respond(500);
 }
 
 // A duplicate is a success from the vendor's point of view: acknowledging it
 // stops the retry loop that would otherwise keep replaying the same fax.
-oeFaxWebhookRespond(match ($result) {
+$respond(match ($result) {
     InboundFaxReceiver::RESULT_ACCEPTED,
     InboundFaxReceiver::RESULT_DUPLICATE,
     InboundFaxReceiver::RESULT_IGNORED => 204,

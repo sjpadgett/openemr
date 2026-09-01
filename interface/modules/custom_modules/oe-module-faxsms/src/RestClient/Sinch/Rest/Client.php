@@ -37,7 +37,7 @@ use GuzzleHttp\Exception\GuzzleException;
 /**
  * Thrown when a Sinch REST request fails (transport error or non-2xx).
  */
-class RestException extends \Exception
+class RestException extends \RuntimeException
 {
     public function __construct(string $message, private readonly int $statusCode = 0, ?\Throwable $previous = null)
     {
