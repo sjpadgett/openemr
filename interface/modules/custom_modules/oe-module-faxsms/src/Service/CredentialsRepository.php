@@ -78,7 +78,13 @@ class CredentialsRepository
                 'space_url' => '',
                 'project_id' => '',
                 'api_token' => '',
-                'fax_number' => ''
+                'fax_number' => '',
+                // Sinch fields
+                'sinch_project_id' => '',
+                'sinch_key_id' => '',
+                'sinch_key_secret' => '',
+                'sinch_service_id' => '',
+                'sinch_fax_number' => ''
             ];
         }
 

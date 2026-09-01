@@ -22,6 +22,7 @@ enum ServiceType: int
     case EMAIL = 4;
     case CLICKATELL_SMS = 5;
     case SIGNALWIRE = 6;
+    case SINCH = 7;
     /**
      * In-browser RingCentral softphone. Unlike the other cases, voice does
      * NOT run server-side — see {@see \OpenEMR\Modules\FaxSMS\Controller\VoiceClient}
@@ -45,6 +46,7 @@ enum ServiceType: int
             self::EMAIL => '_email',
             self::CLICKATELL_SMS => '_clickatell',
             self::SIGNALWIRE => '_signalwire',
+            self::SINCH => '_sinch',
             self::VOICE => '_voice',
         };
     }
@@ -81,6 +83,7 @@ enum ServiceType: int
             self::EMAIL => 'Email',
             self::CLICKATELL_SMS => 'Clickatell SMS',
             self::SIGNALWIRE => 'SignalWire Fax',
+            self::SINCH => 'Sinch Fax',
             self::VOICE => 'Voice',
         };
     }
@@ -100,6 +103,7 @@ enum ServiceType: int
             self::EMAIL => xlt('Email'),
             self::CLICKATELL_SMS => xlt('Clickatell SMS'),
             self::SIGNALWIRE => xlt('SignalWire Fax'),
+            self::SINCH => xlt('Sinch Fax'),
             self::VOICE => xlt('Voice'),
         };
     }
@@ -130,6 +134,7 @@ enum ServiceType: int
             self::RINGCENTRAL => xlt('RingCentral Fax'),
             self::ETHERFAX => xlt('Manage etherFAX'),
             self::SIGNALWIRE => xlt('SignalWire Fax'),
+            self::SINCH => xlt('Sinch Fax'),
             default => xlt('FAX'),
         };
     }
@@ -151,7 +156,7 @@ enum ServiceType: int
     {
         return match ($channel) {
             'sms' => [self::DISABLED, self::RINGCENTRAL, self::TWILIO_SMS, self::CLICKATELL_SMS],
-            'fax' => [self::DISABLED, self::RINGCENTRAL, self::ETHERFAX, self::SIGNALWIRE],
+            'fax' => [self::DISABLED, self::RINGCENTRAL, self::ETHERFAX, self::SIGNALWIRE, self::SINCH],
             'email' => [self::DISABLED, self::EMAIL],
             'voice' => [self::DISABLED, self::VOICE],
             default => [self::DISABLED],
@@ -179,6 +184,7 @@ enum ServiceType: int
                 self::RINGCENTRAL => xlt('RingCentral Fax'),
                 self::ETHERFAX => xlt('etherFAX'),
                 self::SIGNALWIRE => xlt('SignalWire Fax'),
+                self::SINCH => xlt('Sinch Fax'),
                 default => $this->getTranslatedDisplayName(),
             };
         }

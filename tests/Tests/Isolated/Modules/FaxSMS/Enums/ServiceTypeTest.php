@@ -77,9 +77,11 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
                 'int 4 email'        => [4, ServiceType::EMAIL],
                 'int 5 clickatell'   => [5, ServiceType::CLICKATELL_SMS],
                 'int 6 signalwire'   => [6, ServiceType::SIGNALWIRE],
+                'int 7 sinch'        => [7, ServiceType::SINCH],
                 'int 9 voice'        => [9, ServiceType::VOICE],
                 'numeric string "1"' => ['1', ServiceType::RINGCENTRAL],
                 'numeric string "6"' => ['6', ServiceType::SIGNALWIRE],
+                'numeric string "7"' => ['7', ServiceType::SINCH],
                 'float 1.0'          => [1.0, ServiceType::RINGCENTRAL],
             ];
         }
@@ -101,7 +103,7 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
         public static function unrecognizedProvider(): array
         {
             return [
-                'gap value 7'    => [7],
+                'gap value 8'    => [8],
                 'out of range'   => [99],
                 'negative'       => [-1],
                 'non-numeric'    => ['etherfax'],
@@ -138,6 +140,7 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
                 [ServiceType::EMAIL, '_email'],
                 [ServiceType::CLICKATELL_SMS, '_clickatell'],
                 [ServiceType::SIGNALWIRE, '_signalwire'],
+                [ServiceType::SINCH, '_sinch'],
                 [ServiceType::VOICE, '_voice'],
             ];
         }
@@ -157,7 +160,7 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
         {
             return [
                 'sms'   => ['sms', [ServiceType::DISABLED, ServiceType::RINGCENTRAL, ServiceType::TWILIO_SMS, ServiceType::CLICKATELL_SMS]],
-                'fax'   => ['fax', [ServiceType::DISABLED, ServiceType::RINGCENTRAL, ServiceType::ETHERFAX, ServiceType::SIGNALWIRE]],
+                'fax'   => ['fax', [ServiceType::DISABLED, ServiceType::RINGCENTRAL, ServiceType::ETHERFAX, ServiceType::SIGNALWIRE, ServiceType::SINCH]],
                 'email' => ['email', [ServiceType::DISABLED, ServiceType::EMAIL]],
                 'voice' => ['voice', [ServiceType::DISABLED, ServiceType::VOICE]],
                 'bogus' => ['nope', [ServiceType::DISABLED]],
@@ -187,6 +190,7 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
                 [ServiceType::EMAIL, 'Email'],
                 [ServiceType::CLICKATELL_SMS, 'Clickatell SMS'],
                 [ServiceType::SIGNALWIRE, 'SignalWire Fax'],
+                [ServiceType::SINCH, 'Sinch Fax'],
                 [ServiceType::VOICE, 'Voice'],
             ];
         }

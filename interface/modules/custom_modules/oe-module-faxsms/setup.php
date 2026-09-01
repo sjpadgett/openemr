@@ -93,6 +93,7 @@ $mode = $_REQUEST['mode'] ?? null;
                 [ServiceType.TWILIO_SMS]: {hide: ['.etherfax', '.signalwire']},
                 [ServiceType.ETHERFAX]: {hide: ['.twilio', '.signalwire'], show: ['.etherfax']},
                 [ServiceType.SIGNALWIRE]: {hide: ['.twilio', '.etherfax'], show: ['.signalwire']},
+                [ServiceType.SINCH]: {hide: ['.twilio', '.etherfax', '.signalwire'], show: ['.sinch']},
             }[currentService] ?? {};
             hide.forEach(s => $(s).hide());
             show.forEach(s => $(s).show());
@@ -290,6 +291,39 @@ $mode = $_REQUEST['mode'] ?? null;
                                     placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
                                     required="required" value='<?php echo attr($c['fax_number'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your SignalWire fax number in E.164 format") ?></small>
+                            </div>
+                            <?php break;
+                        case ServiceType::SINCH: ?> <!-- Sinch Fax -->
+                            <div class="form-group">
+                                <label for="form_sinch_project_id"><?php echo xlt("Project ID") ?> *</label>
+                                <input id="form_sinch_project_id" type="text" name="sinch_project_id" class="form-control"
+                                    required="required" value='<?php echo attr($c['sinch_project_id'] ?? '') ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Your Sinch Project ID from the Account Dashboard") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_key_id"><?php echo xlt("Access Key ID") ?> *</label>
+                                <input id="form_sinch_key_id" type="text" name="sinch_key_id" class="form-control"
+                                    required="required" value='<?php echo attr($c['sinch_key_id'] ?? '') ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Your Sinch access key ID") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_key_secret"><?php echo xlt("Access Key Secret") ?> *</label>
+                                <input id="form_sinch_key_secret" type="password" name="sinch_key_secret" class="form-control"
+                                    required="required" value='<?php echo attr($c['sinch_key_secret'] ?? '') ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Shown only once, when the access key is created") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_fax_number"><?php echo xlt("Fax Number") ?> *</label>
+                                <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control"
+                                    placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
+                                    required="required" value='<?php echo attr($c['sinch_fax_number'] ?? '') ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Your Sinch fax number in E.164 format") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_service_id"><?php echo xlt("Service ID") ?></label>
+                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control"
+                                    value='<?php echo attr($c['sinch_service_id'] ?? '') ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
                             </div>
                             <?php break;
                         default: break;

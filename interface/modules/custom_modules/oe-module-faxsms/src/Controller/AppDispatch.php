@@ -558,6 +558,12 @@ abstract class AppDispatch
         $projectId = $this->getRequest('project_id');
         $apiToken = $this->getRequest('api_token');
         $faxNumber = $this->formatPhone($this->getRequest('fax_number') ?? '');
+        // Sinch Fax API v3 specific fields
+        $sinchProjectId = $this->getRequest('sinch_project_id');
+        $sinchKeyId = $this->getRequest('sinch_key_id');
+        $sinchKeySecret = $this->getRequest('sinch_key_secret');
+        $sinchServiceId = $this->getRequest('sinch_service_id');
+        $sinchFaxNumber = $this->formatPhone($this->getRequest('sinch_fax_number') ?? '');
 
         return [
             'username' => "$username",
@@ -584,6 +590,12 @@ abstract class AppDispatch
             'project_id' => $projectId ?? '',
             'api_token' => $apiToken ?? '',
             'fax_number' => $faxNumber,
+            // Sinch credentials
+            'sinch_project_id' => $sinchProjectId ?? '',
+            'sinch_key_id' => $sinchKeyId ?? '',
+            'sinch_key_secret' => $sinchKeySecret ?? '',
+            'sinch_service_id' => $sinchServiceId ?? '',
+            'sinch_fax_number' => $sinchFaxNumber,
         ];
     }
 

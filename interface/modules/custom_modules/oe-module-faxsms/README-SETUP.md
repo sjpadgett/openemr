@@ -20,10 +20,12 @@ The FaxSMS module provides integrated communication services for OpenEMR includi
 - **Fax Services**:
   - RingCentral Fax (ID: 1)
   - etherFAX (ID: 3)
+  - SignalWire Fax (ID: 6)
+  - Sinch Fax (ID: 7)
 - **Email Services**:
   - Built-in Email Client (ID: 4)
 - **Voice Services**:
-  - RC Voice Widgets (ID: 6)
+  - RC Voice Widgets (ID: 9)
 
 ## Setup Process
 
