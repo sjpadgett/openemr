@@ -84,7 +84,6 @@ class SinchFaxClient extends AppDispatch implements
 
     protected string $baseDir = '';
     protected CryptoInterface $crypto;
-    protected mixed $credentials = null;
     public string $portalUrl = 'https://dashboard.sinch.com';
 
     private readonly FaxUploadStaging $uploadStaging;
@@ -346,7 +345,7 @@ class SinchFaxClient extends AppDispatch implements
             // Defensive decrypt: a no-op on plaintext, but it covers a caller
             // that handed us bytes still encrypted at rest.
             $bytes = $this->crypto->decryptFromFilesystem($file);
-            if (!is_string($bytes) || $bytes === '') {
+            if ($bytes === '') {
                 return null;
             }
 
@@ -631,7 +630,7 @@ class SinchFaxClient extends AppDispatch implements
     {
         try {
             $rows = (new FaxDocumentService())->fetchQueueRange(
-                gmdate('Y-m-d H:i:s', (int)(strtotime('-90 days') ?: time())),
+                gmdate('Y-m-d H:i:s', strtotime('-90 days')),
                 gmdate('Y-m-d H:i:s', time() + 86400),
                 'inbound'
             );

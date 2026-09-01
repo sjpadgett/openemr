@@ -83,7 +83,13 @@ final class SinchWebhookPayloadParser implements InboundFaxPayloadParserInterfac
     }
 
     /**
-     * @return array<string, mixed>|null
+     * json_decode gives back an untyped array, and a hostile caller can send a
+     * JSON array (integer keys) just as easily as an object. Declaring the key
+     * type honestly keeps that ambiguity visible to callers rather than
+     * asserting a shape the wire never guaranteed; every read in parse() is
+     * already guarded by is_array()/stringOf().
+     *
+     * @return array<array-key, mixed>|null
      */
     private function decodeJsonEnvelope(string $body): ?array
     {
@@ -98,7 +104,7 @@ final class SinchWebhookPayloadParser implements InboundFaxPayloadParserInterfac
     /**
      * Pull the document out of whichever transport carried it.
      *
-     * @param array<string, mixed> $envelope
+     * @param array<array-key, mixed> $envelope
      * @return array{0: string|null, 1: string}
      */
     private function extractDocument(WebhookRequestContext $context, array $envelope): array
