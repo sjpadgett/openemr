@@ -16,7 +16,10 @@ use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\Header;
 use OpenEMR\Modules\FaxSMS\Controller\AppDispatch;
+use OpenEMR\Modules\FaxSMS\Controller\SinchFaxClient;
+use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Webhook\SharedSecretAuthenticator;
 
 $session = SessionWrapperFactory::getInstance()->getActiveSession();
 $serviceType = $_REQUEST['type'] ?? $session->get('oefax_current_module_type') ?? '';
@@ -38,6 +41,16 @@ $serviceEnum = ServiceType::fromValue($service);
 $title = $serviceEnum->getTranslatedDisplayName();
 $module_config = $_REQUEST['module_config'] ?? 0;
 $mode = $_REQUEST['mode'] ?? null;
+
+// Sinch inbound-mode view state. A site with no secret yet is offered a freshly
+// generated one so enabling webhooks is a single save rather than a hunt for a
+// random-string generator.
+$sinchMode = InboundIngestMode::fromValue($c['sinch_inbound_mode'] ?? null);
+$sinchSecret = (string)($c['sinch_webhook_secret'] ?? '');
+if ($sinchSecret === '') {
+    $sinchSecret = SharedSecretAuthenticator::generateSecret();
+}
+$sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhookUrl() : '';
 ?>
 <!DOCTYPE html>
 <html>
@@ -97,6 +110,15 @@ $mode = $_REQUEST['mode'] ?? null;
             }[currentService] ?? {};
             hide.forEach(s => $(s).hide());
             show.forEach(s => $(s).show());
+
+            // Webhook-only credentials are irrelevant in polling mode; keep them
+            // out of the way rather than inviting a half-configured receiver.
+            const syncInboundMode = () => {
+                const isWebhook = $('#form_sinch_inbound_mode').val() === 'webhook';
+                $('.sinch-webhook').toggle(isWebhook);
+            };
+            $('#form_sinch_inbound_mode').on('change', syncInboundMode);
+            syncInboundMode();
         });
     </script>
 </head>
@@ -324,6 +346,52 @@ $mode = $_REQUEST['mode'] ?? null;
                                 <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control"
                                     value='<?php echo attr($c['sinch_service_id'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
+                            </div>
+                            <hr />
+                            <h5><?php echo xlt("Inbound Faxes") ?></h5>
+                            <div class="form-group">
+                                <label for="form_sinch_inbound_mode"><?php echo xlt("How inbound faxes arrive") ?> *</label>
+                                <select id="form_sinch_inbound_mode" name="sinch_inbound_mode" class="form-control">
+                                    <?php echo InboundIngestMode::renderSelectOptions($sinchMode); ?>
+                                </select>
+                                <small class="form-text text-muted"><?php echo xlt("Polling needs no public endpoint and works behind a firewall. Webhook delivers faxes the moment they arrive, but this server must be reachable from the internet."); ?></small>
+                            </div>
+                            <div class="sinch-webhook">
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_secret"><?php echo xlt("Webhook Secret") ?> *</label>
+                                    <input id="form_sinch_webhook_secret" type="text" name="sinch_webhook_secret" class="form-control"
+                                        value='<?php echo attr($sinchSecret) ?>' />
+                                    <small class="form-text text-muted"><?php echo xlt("Sinch does not sign its callbacks, so this secret is what proves a request came from your fax service. Keep it private and treat the webhook URL below as a credential."); ?></small>
+                                </div>
+                                <?php if ($sinchWebhookUrl !== '') { ?>
+                                    <div class="form-group">
+                                        <label for="form_sinch_webhook_url"><?php echo xlt("Webhook URL") ?></label>
+                                        <input id="form_sinch_webhook_url" type="text" class="form-control" readonly
+                                            onclick="this.select()" value='<?php echo attr($sinchWebhookUrl) ?>' />
+                                        <small class="form-text text-muted"><?php echo xlt("Paste this into your Sinch fax service as the Incoming Webhook URL. Set the webhook content type to application/json or multipart/form-data; both are accepted."); ?></small>
+                                    </div>
+                                <?php } else { ?>
+                                    <div class="alert alert-info">
+                                        <?php echo xlt("Save a webhook secret to generate this site's webhook URL."); ?>
+                                    </div>
+                                <?php } ?>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_user"><?php echo xlt("Webhook Basic Auth User") ?></label>
+                                    <input id="form_sinch_webhook_user" type="text" name="sinch_webhook_user" class="form-control"
+                                        value='<?php echo attr($c['sinch_webhook_user'] ?? '') ?>' />
+                                    <small class="form-text text-muted"><?php echo xlt("Optional second layer. Leave blank unless you also embed these credentials in the webhook URL at Sinch."); ?></small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_password"><?php echo xlt("Webhook Basic Auth Password") ?></label>
+                                    <input id="form_sinch_webhook_password" type="password" name="sinch_webhook_password" class="form-control"
+                                        value='<?php echo attr($c['sinch_webhook_password'] ?? '') ?>' />
+                                </div>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_allowed_ips"><?php echo xlt("Allowed IP Ranges") ?></label>
+                                    <textarea id="form_sinch_webhook_allowed_ips" rows="2" name="sinch_webhook_allowed_ips"
+                                        class="form-control"><?php echo text($c['sinch_webhook_allowed_ips'] ?? '') ?></textarea>
+                                    <small class="form-text text-muted"><?php echo xlt("Optional. Comma separated IPs or CIDR ranges from Sinch's published webhook addresses. Leave blank to accept any source that presents the correct secret."); ?></small>
+                                </div>
                             </div>
                             <?php break;
                         default: break;

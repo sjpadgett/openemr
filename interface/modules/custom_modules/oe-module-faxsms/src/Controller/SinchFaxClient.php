@@ -4,16 +4,21 @@
  * Sinch Fax API v3 client.
  *
  * Implements the module's fax channel against Sinch's project-scoped REST API.
- * Two things distinguish it from the other fax vendors:
+ * Three things distinguish it from the other fax vendors:
  *
  *  - Outbound documents are posted to Sinch as base64 content in the request
  *    body, so nothing has to be staged at a URL the provider can reach. There
  *    is no public media handout for Sinch, which means the fax path works on
  *    sites that are not reachable from the internet.
+ *  - Inbound faxes reach the local queue by either of two ingest modes, chosen
+ *    per site: POLL (the inbox pulls) or WEBHOOK (Sinch pushes). The mode
+ *    decides only *when* ingest runs - both write into `oe_faxsms_queue` and
+ *    this class renders, acts on and disposes of faxes from that queue either
+ *    way, so switching modes cannot strand faxes taken in under the other one.
  *  - Sinch has no "delete the fax" operation. DELETE /faxes/{id}/file frees the
- *    stored document while the fax record itself remains listable. Handled
- *    faxes are therefore recognized by the absence of stored content
- *    (hasFile === false) rather than by disappearing upstream.
+ *    stored document while the fax record itself remains listable, so handling
+ *    a fax releases the provider's copy and marks the local queue row rather
+ *    than deleting anything upstream.
  *
  * Document disposal goes through the shared FaxDocumentDisposalTrait and
  * received faxes are filed through FaxDocumentService, so a fax handled here is
@@ -35,16 +40,26 @@ use OpenEMR\Common\Crypto\CryptoInterface;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxChannelInterface;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxDocumentDisposalInterface;
+use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
+use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
 use OpenEMR\Modules\FaxSMS\RestClient\Sinch\Rest\Client;
 use OpenEMR\Modules\FaxSMS\RestClient\Sinch\Rest\FaxInstance;
 use OpenEMR\Modules\FaxSMS\Service\FaxMailer;
 use OpenEMR\Modules\FaxSMS\Service\FaxUploadStaging;
+use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxContentFetcherInterface;
+use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxPayload;
+use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxReceiver;
+use OpenEMR\Modules\FaxSMS\Webhook\SharedSecretAuthenticator;
+use OpenEMR\Modules\FaxSMS\Webhook\SinchWebhookPayloadParser;
 
-class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocumentDisposalInterface
+class SinchFaxClient extends AppDispatch implements
+    FaxChannelInterface,
+    FaxDocumentDisposalInterface,
+    InboundFaxContentFetcherInterface
 {
     use FaxDocumentDisposalTrait;
 
-    /** Max faxes to pull from the Sinch API in a single check. */
+    /** Max faxes to pull from the Sinch API in a single ingest sweep. */
     private const FAX_LIST_LIMIT = 100;
 
     /** Statuses that will not change again. */
@@ -79,6 +94,11 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
     private string $keySecret = '';
     private string $serviceId = '';
     private string $faxNumber = '';
+    private InboundIngestMode $ingestMode = InboundIngestMode::POLL;
+    private string $webhookSecret = '';
+    private string $webhookBasicUser = '';
+    private string $webhookBasicPassword = '';
+    private string $webhookAllowedIps = '';
 
     public function __construct()
     {
@@ -114,20 +134,35 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
     {
         $credentials = AppDispatch::getSetup();
 
-        $this->projectId = is_string($credentials['sinch_project_id'] ?? null)
-            ? trim($credentials['sinch_project_id']) : '';
-        $this->keyId = is_string($credentials['sinch_key_id'] ?? null)
-            ? trim($credentials['sinch_key_id']) : '';
-        $this->keySecret = is_string($credentials['sinch_key_secret'] ?? null)
-            ? trim($credentials['sinch_key_secret']) : '';
-        $this->serviceId = is_string($credentials['sinch_service_id'] ?? null)
-            ? trim($credentials['sinch_service_id']) : '';
+        $this->projectId = $this->credentialString($credentials, 'sinch_project_id');
+        $this->keyId = $this->credentialString($credentials, 'sinch_key_id');
+        $this->keySecret = $this->credentialString($credentials, 'sinch_key_secret');
+        $this->serviceId = $this->credentialString($credentials, 'sinch_service_id');
         // Ensure the 'from' fax number is always in E.164 format.
-        $this->faxNumber = $this->formatPhone(
-            is_string($credentials['sinch_fax_number'] ?? null) ? $credentials['sinch_fax_number'] : ''
+        $this->faxNumber = $this->formatPhone($this->credentialString($credentials, 'sinch_fax_number'));
+
+        $this->ingestMode = InboundIngestMode::fromValue(
+            is_array($credentials) ? ($credentials['sinch_inbound_mode'] ?? null) : null
         );
+        $this->webhookSecret = $this->credentialString($credentials, 'sinch_webhook_secret');
+        $this->webhookBasicUser = $this->credentialString($credentials, 'sinch_webhook_user');
+        $this->webhookBasicPassword = $this->credentialString($credentials, 'sinch_webhook_password');
+        $this->webhookAllowedIps = $this->credentialString($credentials, 'sinch_webhook_allowed_ips');
 
         return $credentials;
+    }
+
+    /**
+     * Read one credential as a trimmed string, whatever the stored shape.
+     */
+    private function credentialString(mixed $credentials, string $key): string
+    {
+        if (!is_array($credentials)) {
+            return '';
+        }
+        $value = $credentials[$key] ?? null;
+
+        return is_string($value) ? trim($value) : '';
     }
 
     /**
@@ -350,32 +385,267 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
     }
 
     /**
-     * Live count of inbound faxes awaiting handling, read straight from Sinch.
-     * Handled faxes have had their stored document released, so the count of
-     * inbound faxes that still hold content is the unhandled count.
+     * Build a receiver for the inbound webhook endpoint, or null when this site
+     * must not expose one.
+     *
+     * Called from an unauthenticated context, so it re-derives everything from
+     * stored configuration and refuses unless the site has genuinely opted in:
+     * Sinch must be the enabled fax vendor, ingest mode must be WEBHOOK, and a
+     * usable secret must be configured. Any other state yields null, which the
+     * endpoint reports as 404.
+     */
+    public static function createWebhookReceiver(): ?InboundFaxReceiver
+    {
+        $enabledFaxVendor = ServiceType::fromValue(
+            OEGlobalsBag::getInstance()->get('oefax_enable_fax') ?? null
+        );
+        if ($enabledFaxVendor !== ServiceType::SINCH) {
+            return null;
+        }
+
+        $client = new self();
+        if ($client->ingestMode !== InboundIngestMode::WEBHOOK) {
+            return null;
+        }
+        if (strlen($client->webhookSecret) < SharedSecretAuthenticator::MIN_SECRET_LENGTH) {
+            ServiceContainer::getLogger()->warning(
+                'Sinch webhook mode is enabled but no usable secret is configured; endpoint disabled'
+            );
+
+            return null;
+        }
+
+        return new InboundFaxReceiver(
+            new SharedSecretAuthenticator(
+                $client->webhookSecret,
+                $client->webhookBasicUser,
+                $client->webhookBasicPassword,
+                SharedSecretAuthenticator::parseAllowlist($client->webhookAllowedIps)
+            ),
+            new SinchWebhookPayloadParser(),
+            new FaxDocumentService(),
+            ServiceContainer::getLogger(),
+            $client->queueAccount(),
+            $client
+        );
+    }
+
+    /**
+     * Fetch a fax document from Sinch, for a callback that carried metadata
+     * only. Satisfies InboundFaxContentFetcherInterface.
+     */
+    public function fetchFaxContent(string $faxId): ?string
+    {
+        return $this->downloadFaxContent($faxId);
+    }
+
+    /**
+     * The webhook URL a site pastes into its Sinch service configuration.
+     * Returns '' until a secret exists, so the setup screen can prompt for one
+     * rather than hand out a URL that would never authenticate.
+     */
+    public function getWebhookUrl(): string
+    {
+        if ($this->webhookSecret === '') {
+            return '';
+        }
+        $globals = OEGlobalsBag::getInstance();
+        $base = rtrim($globals->getString('site_addr_oath') . $globals->getString('web_root'), '/');
+
+        return $base
+            . '/interface/modules/custom_modules/oe-module-faxsms/library/faxReceive.php'
+            . '?secret=' . urlencode($this->webhookSecret);
+    }
+
+    /**
+     * Queue rows are scoped by (account, job_id); the Sinch project is this
+     * vendor's account identity.
+     */
+    private function queueAccount(): string
+    {
+        return $this->projectId;
+    }
+
+    /**
+     * Pull recent faxes from Sinch and ingest any the queue has not seen.
+     *
+     * This is the single ingest implementation. POLL mode runs it on every
+     * inbox view; WEBHOOK mode runs it as an occasional reconcile sweep, so a
+     * webhook that was missed, misconfigured or briefly undeliverable still
+     * lands rather than being lost.
+     *
+     * Inbound faxes are stored with their document, since that is what the
+     * inbox acts on. Outbound faxes are recorded as metadata only - we already
+     * hold what we sent, and the document stays retrievable from Sinch on
+     * demand for the sent list's view/download actions.
+     *
+     * @return int Number of newly queued faxes.
+     */
+    public function ingestInboundFaxes(int $sinceDays = 30): int
+    {
+        if ($this->client === null) {
+            return 0;
+        }
+
+        $documents = new FaxDocumentService();
+        $account = $this->queueAccount();
+        $ingested = 0;
+
+        try {
+            $faxes = $this->client->fax->v3->faxes->read(
+                ['createTimeFrom' => gmdate('Y-m-d\TH:i:s\Z', (int)(strtotime("-{$sinceDays} days") ?: time()))],
+                self::FAX_LIST_LIMIT
+            );
+        } catch (\Throwable $e) {
+            ServiceContainer::getLogger()->error('Sinch inbound ingest could not list faxes', ['exception' => $e]);
+
+            return 0;
+        }
+
+        foreach ($faxes as $fax) {
+            $faxId = (string)($fax->id ?? '');
+            if ($faxId === '') {
+                continue;
+            }
+
+            try {
+                $existing = $documents->getFaxDocument($faxId);
+                if ($existing !== null) {
+                    // Already queued. Keep its status current so a fax that has
+                    // since completed or failed stops showing as in-flight.
+                    $status = strtolower((string)($fax->status ?? ''));
+                    if ($status !== '' && $status !== strtolower((string)($existing['status'] ?? ''))) {
+                        $documents->updateFaxStatus($faxId, $status);
+                    }
+                    continue;
+                }
+
+                $isInbound = ($fax->direction ?? 'INBOUND') !== 'OUTBOUND';
+                // Never queue a failed inbound fax: there is no document behind
+                // it and nothing for a user to act on.
+                if ($isInbound && in_array((string)$fax->status, self::FAILED_FAX_STATUSES, true)) {
+                    continue;
+                }
+
+                $payload = $this->toInboundPayload($fax, $isInbound);
+                $documents->insertInboundFaxToQueue($this->toQueueRecord($payload), $account);
+                $ingested++;
+            } catch (\Throwable $e) {
+                // One bad fax must not abort the sweep.
+                ServiceContainer::getLogger()->error('Sinch ingest failed for a fax', [
+                    'exception' => $e,
+                    'faxId' => $faxId,
+                ]);
+            }
+        }
+
+        return $ingested;
+    }
+
+    /**
+     * Normalize a listed fax into the shared inbound payload, fetching the
+     * document for inbound faxes that are complete.
+     */
+    private function toInboundPayload(FaxInstance $fax, bool $isInbound): InboundFaxPayload
+    {
+        $faxId = (string)$fax->id;
+        $content = null;
+        if ($isInbound && $fax->status === 'COMPLETED' && $fax->hasFile !== false) {
+            $content = $this->downloadFaxContent($faxId);
+        }
+
+        $created = $fax->completedTime ?? $fax->createTime;
+
+        return new InboundFaxPayload(
+            faxId: $faxId,
+            from: (string)($fax->from ?? ''),
+            to: (string)($fax->to ?? ''),
+            direction: $isInbound ? 'inbound' : 'outbound',
+            status: strtolower((string)($fax->status ?? 'unknown')),
+            pages: (int)($fax->numberOfPages ?? 0),
+            receivedOn: $created instanceof \DateTimeImmutable
+                ? $created->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+                : gmdate('Y-m-d H:i:s'),
+            content: $content,
+        );
+    }
+
+    /**
+     * Shape a payload the way FaxDocumentService::insertInboundFaxToQueue()
+     * expects, so pull ingest and the webhook receiver share one storage path.
+     */
+    private function toQueueRecord(InboundFaxPayload $payload): object
+    {
+        $record = new \stdClass();
+        $record->JobId = $payload->faxId;
+        $record->CallingNumber = $payload->from !== '' ? $payload->from : 'unknown';
+        $record->CalledNumber = $payload->to;
+        $record->ReceivedOn = $payload->receivedOn;
+        $record->PagesReceived = $payload->pages;
+        $record->FaxImage = $payload->hasContent() ? base64_encode((string)$payload->content) : '';
+        $record->DocumentParams = (object)['Type' => $payload->mimeType];
+
+        return $record;
+    }
+
+    /**
+     * Run ingest if this mode wants it now.
+     *
+     * POLL ingests on every view. WEBHOOK only sweeps once per interval, using
+     * a marker file's mtime as site-wide state so the throttle holds across
+     * users and processes without a schema change.
+     */
+    private function ingestIfDue(): void
+    {
+        $interval = $this->ingestMode->reconcileIntervalSeconds();
+        if ($interval === 0) {
+            $this->ingestInboundFaxes();
+            return;
+        }
+
+        $marker = $this->reconcileMarkerPath();
+        if ($marker !== null && is_file($marker) && (time() - (int)filemtime($marker)) < $interval) {
+            return;
+        }
+        if ($marker !== null) {
+            // Touch before the sweep so concurrent views do not all sweep.
+            @touch($marker);
+        }
+        $this->ingestInboundFaxes();
+    }
+
+    private function reconcileMarkerPath(): ?string
+    {
+        $dir = OEGlobalsBag::getInstance()->getString('OE_SITE_DIR') . '/documents/logs_and_misc';
+        if (!is_dir($dir) && !mkdir($dir, 0770, true) && !is_dir($dir)) {
+            return null;
+        }
+
+        return $dir . '/.sinch_fax_reconcile';
+    }
+
+    /**
+     * Live count of inbound faxes awaiting handling, read from the local queue.
      */
     public function fetchReminderCount(): string
     {
-        if ($this->client === null) {
-            return (string)json_encode(['count' => 0]);
-        }
         try {
-            $faxes = $this->client->fax->v3->faxes->read(
-                [
-                    'direction' => 'INBOUND',
-                    'createTimeFrom' => gmdate('Y-m-d\TH:i:s\Z', (int)(strtotime('-30 days') ?: time())),
-                ],
-                self::FAX_LIST_LIMIT
+            $rows = (new FaxDocumentService())->fetchQueueRange(
+                gmdate('Y-m-d H:i:s', (int)(strtotime('-90 days') ?: time())),
+                gmdate('Y-m-d H:i:s', time() + 86400),
+                'inbound'
             );
             $count = 0;
-            foreach ($faxes as $fax) {
-                if ($fax->status === 'COMPLETED' && $fax->hasFile !== false) {
+            foreach ($rows as $row) {
+                if (empty($row['patient_id'])) {
                     $count++;
                 }
             }
+
             return (string)json_encode(['count' => $count]);
         } catch (\Throwable $e) {
             ServiceContainer::getLogger()->error('Sinch reminder count failed', ['exception' => $e]);
+
             return (string)json_encode(['count' => 0]);
         }
     }
@@ -393,10 +663,13 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
      * the same contract every other vendor implements.
      *
      * Request: docid (fax id), download ('true'|...), delete ('true'|...).
-     *   delete   -> release the stored document at Sinch; returns 'success'.
+     *   delete   -> mark the queue row handled and release Sinch's stored copy.
      *   download -> stage an encrypted temp copy for disposeDocument to stream,
-     *               release the provider copy, return {base64, mime, filename, path}.
+     *               mark handled, release the provider copy.
      *   view     -> return {base64, mime, filename} for the in-modal viewer.
+     *
+     * Inbound documents come from the local queue; outbound ones are fetched
+     * from Sinch on demand, since sent faxes are queued as metadata only.
      */
     public function viewFax(): string
     {
@@ -414,23 +687,29 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
         }
 
         try {
+            $documents = new FaxDocumentService();
+
             if ($isDelete) {
+                $documents->deleteFaxDocument($faxId, true);
                 $this->releaseUpstreamDocument($faxId);
+
                 return (string)json_encode('success');
             }
 
-            $rawData = $this->downloadFaxContent($faxId);
+            $rawData = $this->readFaxBytes($faxId, $documents);
             if ($rawData === null || $rawData === '') {
-                return (string)json_encode(['error' => xlt('Fax document not available from provider')]);
+                return (string)json_encode(['error' => xlt('Fax document not available')]);
             }
 
             if ($isDownload) {
                 // The user is taking it: stage an encrypted temp copy for
-                // disposeDocument to stream, then release the provider copy to
-                // honor the "downloaded -> no longer available here" contract.
+                // disposeDocument to stream, mark the queue row handled, and
+                // release the provider copy.
                 $filePath = $this->saveFaxToFile($rawData, $faxId);
                 $this->setSession('where', $filePath);
+                $documents->deleteFaxDocument($faxId, true);
                 $this->releaseUpstreamDocument($faxId);
+
                 return (string)json_encode([
                     'base64' => base64_encode($rawData),
                     'mime' => 'application/pdf',
@@ -447,8 +726,23 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
             ]);
         } catch (\Throwable $e) {
             ServiceContainer::getLogger()->error('Sinch viewFax failed', ['exception' => $e, 'faxId' => $faxId]);
+
             return (string)json_encode(['error' => xlt('Error retrieving fax')]);
         }
+    }
+
+    /**
+     * Read a fax's bytes from wherever this vendor keeps them: the local queue
+     * for received faxes, the provider for sent ones.
+     */
+    private function readFaxBytes(string $faxId, FaxDocumentService $documents): ?string
+    {
+        $queued = $documents->getFaxDocument($faxId);
+        if ($queued !== null && ($queued['direction'] ?? 'inbound') === 'inbound') {
+            return $documents->readQueuedFaxContent($faxId);
+        }
+
+        return $this->downloadFaxContent($faxId);
     }
 
     /**
@@ -465,17 +759,17 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
         if ($dir !== '' && !is_dir($dir)) {
             mkdir($dir, 0700, true);
         }
-        $filePath = $dir . DIRECTORY_SEPARATOR . 'Fax_' . $faxId . '.pdf';
+        $filePath = $dir . DIRECTORY_SEPARATOR . 'Fax_' . preg_replace('/[^A-Za-z0-9_-]/', '', $faxId) . '.pdf';
         file_put_contents($filePath, $this->crypto->encryptForFilesystem($data));
 
         return $filePath;
     }
 
     /**
-     * File a received fax to a patient chart: download it from Sinch, store it
-     * through the shared FaxDocumentService (so it lands as a patient Document
-     * in the FAX category like every other vendor's received fax), then release
-     * the provider's stored copy.
+     * File a received fax to a patient chart through the shared
+     * FaxDocumentService, so it lands as a patient Document in the FAX category
+     * exactly like every other vendor's received fax, then release the
+     * provider's stored copy.
      */
     public function assignFax(): string
     {
@@ -493,19 +787,7 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
         }
 
         try {
-            $fax = $this->fetchUpstreamFax($faxId);
-            $rawData = $this->downloadFaxContent($faxId);
-            if ($rawData === null || $rawData === '') {
-                return (string)json_encode(['error' => xlt('Fax document not available from provider')]);
-            }
-
-            $result = (new FaxDocumentService())->storeFaxDocument(
-                $faxId,
-                $rawData,
-                $fax?->from ?? '',
-                $patientId
-            );
-
+            $result = (new FaxDocumentService())->assignFaxToPatient($faxId, $patientId);
             if (empty($result['success'])) {
                 return (string)json_encode(['error' => xlt('Failed to store fax document')]);
             }
@@ -519,26 +801,25 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
             ]);
         } catch (\Throwable $e) {
             ServiceContainer::getLogger()->error('Sinch assignFax failed', ['exception' => $e, 'faxId' => $faxId]);
+
             return (string)json_encode(['error' => xlt('Failed to assign fax')]);
         }
     }
 
     /**
-     * Render the fax inbox and sent list directly from the live Sinch list.
+     * Render the inbox and sent list from the local fax queue.
      *
-     * Stateless by design (the RingCentral/SignalWire model): Sinch is the
-     * system of record, so this neither writes to nor reads from
-     * oe_faxsms_queue. Because Sinch keeps the fax record after its document is
-     * released, an inbound fax is treated as handled once it no longer has
-     * stored content. A provider response that omits hasFile leaves the row
-     * visible rather than hiding it, so nothing is ever silently dropped from
-     * the inbox.
+     * Identical in both ingest modes - only ingestIfDue() behaves differently,
+     * so a site that switches between polling and webhooks sees the same inbox,
+     * the same row actions and the same history throughout.
      */
     public function getPending(): string
     {
         if (!$this->authenticate()) {
             return $this->authErrorDefault;
         }
+
+        $this->ingestIfDue();
 
         $fromRaw = $this->getRequest('datefrom');
         $toRaw = $this->getRequest('dateto');
@@ -554,79 +835,67 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
         // Index 0 = received (inbound), 1 = sent (outbound), 2 = reserved.
         $responseMsg = [0 => '', 1 => '', 2 => xlt('Not Implemented')];
 
-        if ($this->client !== null) {
-            try {
-                $faxes = $this->client->fax->v3->faxes->read(
-                    [
-                        'createTimeFrom' => gmdate('Y-m-d\TH:i:s\Z', (int)strtotime(date('Y-m-d', $fromTs) . ' 00:00:01 UTC')),
-                        'createTimeTo' => gmdate('Y-m-d\TH:i:s\Z', (int)strtotime(date('Y-m-d', $toTs) . ' 23:59:59 UTC')),
-                    ],
-                    self::FAX_LIST_LIMIT
-                );
+        try {
+            $rows = (new FaxDocumentService())->fetchQueueRange(
+                date('Y-m-d H:i:s', $fromTs) ,
+                date('Y-m-d 23:59:59', $toTs)
+            );
 
-                foreach ($faxes as $fax) {
-                    $faxId = (string)($fax->id ?? '');
-                    if ($faxId === '') {
-                        continue;
-                    }
-                    $status = (string)($fax->status ?? 'UNKNOWN');
-                    $from = (string)($fax->from ?? '');
-                    $to = (string)($fax->to ?? '');
-                    $pages = (int)($fax->numberOfPages ?? 0);
-                    $dateLocal = $fax->createTime
-                        ? $fax->createTime->setTimezone(new \DateTimeZone(date_default_timezone_get()))
-                            ->format('M j, Y g:i:sa T')
-                        : '';
-
-                    // Column mapping matches the shared non-RC fax table headers:
-                    //   Status = status, Pages = numberOfPages.
-                    $statusCol = text($status);
-                    $resultCol = $pages > 0 ? (text((string)$pages) . ' ' . xlt('pages')) : '';
-                    $isTerminal = in_array($status, self::TERMINAL_FAX_STATUSES, true);
-
-                    if (($fax->direction ?? '') === 'OUTBOUND') {
-                        $actions = '';
-                        if ($status === 'COMPLETED' && $fax->hasFile !== false) {
-                            $actions .= $this->documentAction($faxId, 'false', 'fa-file-pdf', xla('View fax document'));
-                            $actions .= $this->documentAction($faxId, 'true', 'fa-file-download', xla('Download fax document'));
-                        }
-                        $responseMsg[1] .= '<tr><td>' . text($dateLocal) . '</td><td>' . text($from) . '</td><td>'
-                            . text($to) . '</td><td>' . $resultCol . '</td><td>' . $statusCol
-                            . '</td><td class="text-left">' . $actions . '</td></tr>';
-                        continue;
-                    }
-
-                    // Inbound. Hide failures; show in-progress; act on completed.
-                    if (in_array($status, self::FAILED_FAX_STATUSES, true)) {
-                        continue;
-                    }
-                    // Already filed/downloaded: Sinch keeps the record but the
-                    // document is gone, so it is no longer pending.
-                    if ($fax->hasFile === false) {
-                        continue;
-                    }
-
-                    $actions = '';
-                    if ($isTerminal) {
-                        $actions .= "<a role='button' href='#' onclick=\"assignFaxToPatient(" . attr_js($faxId)
-                            . ")\"><i class='fa fa-chart-simple mr-2' title='" . xla('File fax to a patient chart') . "'></i></a>";
-                        $actions .= $this->documentAction($faxId, 'false', 'fa-file-pdf', xla('View fax document'));
-                        $actions .= $this->documentAction($faxId, 'true', 'fa-file-download', xla('Download fax document'));
-                        $actions .= "<a role='button' href='#' onclick=\"getDocument(event, null, " . attr_js($faxId)
-                            . ", 'false', 'true')\"><i class='text-danger fa fa-trash mr-2' title='"
-                            . xla('Delete fax') . "'></i></a>";
-                    } else {
-                        // In-progress: shown for visibility, no actions yet.
-                        $statusCol = "<span class='badge badge-secondary'>" . text($status) . '</span>';
-                    }
-
-                    $responseMsg[0] .= '<tr><td>' . text($dateLocal) . '</td><td>' . text($from) . '</td><td>'
-                        . text($to) . '</td><td>' . $resultCol . '</td><td>' . $statusCol
-                        . '</td><td class="text-left">' . $actions . '</td></tr>';
+            foreach ($rows as $row) {
+                $faxId = (string)($row['job_id'] ?? '');
+                if ($faxId === '') {
+                    continue;
                 }
-            } catch (\Throwable $e) {
-                ServiceContainer::getLogger()->error('Sinch getPending failed', ['exception' => $e]);
+                $isInbound = ($row['direction'] ?? 'inbound') !== 'outbound';
+                $status = (string)($row['status'] ?? 'unknown');
+                $details = json_decode((string)($row['details_json'] ?? '{}'), true);
+                $details = is_array($details) ? $details : [];
+                $pages = match (true) {
+                    is_numeric($details['pages'] ?? null) => (int)$details['pages'],
+                    is_numeric($details['num_pages'] ?? null) => (int)$details['num_pages'],
+                    default => 0,
+                };
+
+                $receivedUtc = (string)($row['receive_date'] ?? '');
+                $dateLocal = $receivedUtc !== ''
+                    ? $this->formatQueueDate($receivedUtc)
+                    : (string)($row['date'] ?? '');
+                $pagesCol = $pages > 0 ? (text((string)$pages) . ' ' . xlt('pages')) : '';
+                $isTerminal = in_array(strtoupper($status), self::TERMINAL_FAX_STATUSES, true)
+                    || in_array($status, ['received', 'delivered', 'completed'], true);
+
+                $cells = '<tr><td>' . text($dateLocal) . '</td><td>'
+                    . text((string)($row['calling_number'] ?? '')) . '</td><td>'
+                    . text((string)($row['called_number'] ?? '')) . '</td><td>' . $pagesCol . '</td><td>';
+
+                if (!$isInbound) {
+                    $actions = $isTerminal
+                        ? $this->documentAction($faxId, 'false', 'fa-file-pdf', xla('View fax document'))
+                        . $this->documentAction($faxId, 'true', 'fa-file-download', xla('Download fax document'))
+                        : '';
+                    $responseMsg[1] .= $cells . text($status) . '</td><td class="text-left">' . $actions . '</td></tr>';
+                    continue;
+                }
+
+                if (!$isTerminal) {
+                    // In-flight: shown for visibility, no actions yet.
+                    $responseMsg[0] .= $cells . "<span class='badge badge-secondary'>" . text($status)
+                        . '</span></td><td class="text-left"></td></tr>';
+                    continue;
+                }
+
+                $actions = "<a role='button' href='#' onclick=\"assignFaxToPatient(" . attr_js($faxId)
+                    . ")\"><i class='fa fa-chart-simple mr-2' title='" . xla('File fax to a patient chart') . "'></i></a>"
+                    . $this->documentAction($faxId, 'false', 'fa-file-pdf', xla('View fax document'))
+                    . $this->documentAction($faxId, 'true', 'fa-file-download', xla('Download fax document'))
+                    . "<a role='button' href='#' onclick=\"getDocument(event, null, " . attr_js($faxId)
+                    . ", 'false', 'true')\"><i class='text-danger fa fa-trash mr-2' title='"
+                    . xla('Delete fax') . "'></i></a>";
+
+                $responseMsg[0] .= $cells . text($status) . '</td><td class="text-left">' . $actions . '</td></tr>';
             }
+        } catch (\Throwable $e) {
+            ServiceContainer::getLogger()->error('Sinch getPending failed', ['exception' => $e]);
         }
 
         if ($responseMsg[0] === '') {
@@ -641,6 +910,26 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
     }
 
     /**
+     * Render a stored UTC queue timestamp in the server's local zone.
+     *
+     * Only `receive_date` is written in UTC; the `date` column is the database's
+     * own NOW(), so callers pass that one through unconverted.
+     */
+    private function formatQueueDate(string $stored): string
+    {
+        if ($stored === '') {
+            return '';
+        }
+        $parsed = date_create_immutable($stored, new \DateTimeZone('UTC'));
+        if (!$parsed instanceof \DateTimeImmutable) {
+            return $stored;
+        }
+
+        return $parsed->setTimezone(new \DateTimeZone(date_default_timezone_get()))
+            ->format('M j, Y g:i:sa T');
+    }
+
+    /**
      * Build one view/download icon routed through the shared getDocument()
      * handler, so every Sinch row uses the same UI contract as other vendors.
      */
@@ -648,22 +937,6 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
     {
         return "<a role='button' href='#' onclick=\"getDocument(event, null, " . attr_js($faxId) . ', '
             . attr_js($download) . ")\"><i class='fa " . attr($icon) . " mr-2' title='" . $title . "'></i></a>";
-    }
-
-    /**
-     * Fetch a single fax resource from Sinch by id.
-     */
-    private function fetchUpstreamFax(string $faxId): ?FaxInstance
-    {
-        if ($this->client === null || $faxId === '') {
-            return null;
-        }
-        try {
-            return $this->client->fax->v3->faxes->getContext($faxId)->fetch();
-        } catch (\Throwable $e) {
-            ServiceContainer::getLogger()->error('Sinch fax fetch failed', ['exception' => $e, 'faxId' => $faxId]);
-            return null;
-        }
     }
 
     /**
@@ -678,6 +951,7 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
             return $this->client->fax->v3->faxes->getContext($faxId)->downloadContent();
         } catch (\Throwable $e) {
             ServiceContainer::getLogger()->error('Sinch fax download failed', ['exception' => $e, 'faxId' => $faxId]);
+
             return null;
         }
     }
@@ -699,6 +973,7 @@ class SinchFaxClient extends AppDispatch implements FaxChannelInterface, FaxDocu
                 'Sinch fax content release failed',
                 ['exception' => $e, 'faxId' => $faxId]
             );
+
             return false;
         }
     }

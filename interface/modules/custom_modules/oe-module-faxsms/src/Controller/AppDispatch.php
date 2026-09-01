@@ -27,6 +27,7 @@ use OpenEMR\Common\Utils\ValidationUtils;
 use OpenEMR\Common\ValueObjects\PhoneNumber;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\BootstrapService;
+use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
 use OpenEMR\Modules\FaxSMS\Service\CredentialsRepository;
 use OpenEMR\Modules\FaxSMS\Service\ServiceFactory;
@@ -564,6 +565,12 @@ abstract class AppDispatch
         $sinchKeySecret = $this->getRequest('sinch_key_secret');
         $sinchServiceId = $this->getRequest('sinch_service_id');
         $sinchFaxNumber = $this->formatPhone($this->getRequest('sinch_fax_number') ?? '');
+        // Sinch inbound ingest mode and webhook receiver credentials.
+        $sinchInboundMode = $this->getRequest('sinch_inbound_mode');
+        $sinchWebhookSecret = $this->getRequest('sinch_webhook_secret');
+        $sinchWebhookUser = $this->getRequest('sinch_webhook_user');
+        $sinchWebhookPassword = $this->getRequest('sinch_webhook_password');
+        $sinchWebhookAllowedIps = $this->getRequest('sinch_webhook_allowed_ips');
 
         return [
             'username' => "$username",
@@ -596,6 +603,11 @@ abstract class AppDispatch
             'sinch_key_secret' => $sinchKeySecret ?? '',
             'sinch_service_id' => $sinchServiceId ?? '',
             'sinch_fax_number' => $sinchFaxNumber,
+            'sinch_inbound_mode' => InboundIngestMode::fromValue($sinchInboundMode)->value,
+            'sinch_webhook_secret' => $sinchWebhookSecret ?? '',
+            'sinch_webhook_user' => $sinchWebhookUser ?? '',
+            'sinch_webhook_password' => $sinchWebhookPassword ?? '',
+            'sinch_webhook_allowed_ips' => $sinchWebhookAllowedIps ?? '',
         ];
     }
 

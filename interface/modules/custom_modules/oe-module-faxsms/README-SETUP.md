@@ -27,6 +27,40 @@ The FaxSMS module provides integrated communication services for OpenEMR includi
 - **Voice Services**:
   - RC Voice Widgets (ID: 9)
 
+### Inbound fax delivery (Sinch)
+
+Sinch fax supports two ways for received faxes to reach OpenEMR, chosen per site
+under **Setup Fax → How inbound faxes arrive**:
+
+- **Polling** (default) — the fax inbox asks Sinch for recent faxes and files any
+  it has not seen. Requires no public endpoint and works on a server the internet
+  cannot reach. Latency is bounded by how often the inbox is opened.
+- **Webhook** — Sinch posts each fax to this server as it arrives. Near-instant
+  and makes no repeated API calls, but this server must be reachable from the
+  internet.
+
+Both modes write into the same `oe_faxsms_queue` table and the inbox renders from
+that queue either way, so switching modes never strands faxes taken in under the
+other one. Webhook mode also re-runs the polling sweep periodically, so a missed
+or misconfigured webhook degrades to polling rather than losing faxes.
+
+#### Securing the webhook
+
+Sinch does not sign its callbacks, so the endpoint is protected by what you
+configure, in three independent layers:
+
+1. **Webhook secret** (required) — generated for you on the setup screen and
+   carried in the webhook URL. Treat the whole URL as a credential.
+2. **HTTP Basic credentials** (optional) — Sinch supports credentials embedded in
+   the configured webhook URL.
+3. **Allowed IP ranges** (optional) — comma separated IPs or CIDR ranges from
+   Sinch's published webhook addresses.
+
+The endpoint is inert unless Sinch is the enabled fax vendor, the mode is set to
+webhook, and a secret is configured; otherwise it answers `404`. Set the Sinch
+service's webhook content type to either `application/json` or
+`multipart/form-data` — both are accepted.
+
 ## Setup Process
 
 ### Phase 1: Enable Accounts (Global Configuration)
