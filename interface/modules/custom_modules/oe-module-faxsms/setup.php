@@ -16,7 +16,11 @@ use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\Header;
 use OpenEMR\Modules\FaxSMS\Controller\AppDispatch;
+use OpenEMR\Modules\FaxSMS\Controller\SinchFaxClient;
+use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Enums\VendorDocumentStorage;
+use OpenEMR\Modules\FaxSMS\Webhook\SharedSecretAuthenticator;
 
 $session = SessionWrapperFactory::getInstance()->getActiveSession();
 $serviceType = $_REQUEST['type'] ?? $session->get('oefax_current_module_type') ?? '';
@@ -33,11 +37,34 @@ $service = $clientApp::getServiceType();
 if (!$clientApp->verifyAcl()) {
     die("<h3>" . xlt("Not Authorised!") . "</h3>");
 }
-$c = $clientApp->getCredentials();
+$credentialsRaw = $clientApp->getCredentials();
+// Narrow once here rather than at every read below: getCredentials() is declared
+// mixed for the legacy vendors, and the form is nothing but reads off this array.
+$c = is_array($credentialsRaw) ? $credentialsRaw : [];
+/** Read one credential as a string, whatever the stored shape. */
+$cs = static function (string $key) use ($c): string {
+    $value = $c[$key] ?? '';
+    return is_scalar($value) ? (string)$value : '';
+};
 $serviceEnum = ServiceType::fromValue($service);
 $title = $serviceEnum->getTranslatedDisplayName();
 $module_config = $_REQUEST['module_config'] ?? 0;
 $mode = $_REQUEST['mode'] ?? null;
+
+// Sinch inbound-mode view state. A site with no secret yet is offered a freshly
+// generated one so enabling webhooks is a single save rather than a hunt for a
+// random-string generator.
+$sinchMode = InboundIngestMode::fromValue($cs('sinch_inbound_mode'));
+$sinchSecret = $cs('sinch_webhook_secret');
+if ($sinchSecret === '') {
+    $sinchSecret = SharedSecretAuthenticator::generateSecret();
+}
+$sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhookUrl() : '';
+$sinchStorage = VendorDocumentStorage::fromValue($cs('sinch_vendor_storage'));
+// Credentials supplied by the platform (environment or a mounted file) are shown
+// read-only: editing them here would be silently overridden at runtime.
+$sinchManagedKeys = $clientApp instanceof SinchFaxClient ? $clientApp->getManagedCredentialKeys() : [];
+$sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys, true);
 ?>
 <!DOCTYPE html>
 <html>
@@ -93,9 +120,78 @@ $mode = $_REQUEST['mode'] ?? null;
                 [ServiceType.TWILIO_SMS]: {hide: ['.etherfax', '.signalwire']},
                 [ServiceType.ETHERFAX]: {hide: ['.twilio', '.signalwire'], show: ['.etherfax']},
                 [ServiceType.SIGNALWIRE]: {hide: ['.twilio', '.etherfax'], show: ['.signalwire']},
+                [ServiceType.SINCH]: {hide: ['.twilio', '.etherfax', '.signalwire'], show: ['.sinch']},
             }[currentService] ?? {};
             hide.forEach(s => $(s).hide());
             show.forEach(s => $(s).show());
+
+            // Webhook-only credentials are irrelevant in polling mode; keep them
+            // out of the way rather than inviting a half-configured receiver.
+            const syncInboundMode = () => {
+                const isWebhook = $('#form_sinch_inbound_mode').val() === 'webhook';
+                $('.sinch-webhook').toggle(isWebhook);
+                // Polling cannot fetch documents Sinch does not keep, so flag
+                // that combination before it silently produces empty faxes.
+                const storesNothing = $('#form_sinch_vendor_storage').val() === 'none';
+                $('#sinch-delivery-warning').toggleClass('d-none', !(storesNothing && !isWebhook));
+            };
+            $('#form_sinch_inbound_mode, #form_sinch_vendor_storage').on('change', syncInboundMode);
+            syncInboundMode();
+
+            // Ask Sinch which fax services and numbers this project actually has,
+            // so the number is chosen rather than typed. The same response
+            // reports whether each service keeps documents, which is the setting
+            // most likely to drift out of sync with the Sinch dashboard.
+            $('#sinch-lookup').on('click', function () {
+                const $status = $('#sinch-lookup-status');
+                const $button = $(this);
+                $button.prop('disabled', true);
+                $status.removeClass('text-danger').text(<?php echo xlj('Asking Sinch...'); ?>);
+
+                $.ajax({
+                    type: 'POST',
+                    url: 'discoverFaxNumbers?type=fax',
+                    dataType: 'json',
+                    data: {csrf_token_form: <?php echo js_escape(CsrfUtils::collectCsrfToken($session, 'contact-form')); ?>}
+                }).done(function (data) {
+                    if (!data || data.error) {
+                        $status.addClass('text-danger')
+                            .text(data && data.error ? data.error : <?php echo xlj('Lookup failed.'); ?>);
+                        return;
+                    }
+
+                    const $numbers = $('#sinch-number-list').empty();
+                    const $services = $('#sinch-service-list').empty();
+                    let numberCount = 0;
+                    let retains = null;
+
+                    (data.services || []).forEach(function (service) {
+                        $services.append($('<option>').attr('value', service.id).text(service.name));
+                        (service.numbers || []).forEach(function (number) {
+                            $numbers.append($('<option>').attr('value', number));
+                            numberCount++;
+                        });
+                        // Only adopt a retention answer the project agrees on;
+                        // a mixed project keeps whatever the admin chose.
+                        if (typeof service.retainsInbound === 'boolean') {
+                            retains = (retains === null || retains === service.retainsInbound)
+                                ? service.retainsInbound : 'mixed';
+                        }
+                    });
+
+                    if (typeof retains === 'boolean') {
+                        $('#form_sinch_vendor_storage').val(retains ? 'retained' : 'none').trigger('change');
+                    }
+
+                    $status.text(numberCount
+                        ? numberCount + ' ' + <?php echo xlj('numbers available - click the field to choose one.'); ?>
+                        : <?php echo xlj('No numbers are assigned to this project yet.'); ?>);
+                }).fail(function () {
+                    $status.addClass('text-danger').text(<?php echo xlj('Lookup failed.'); ?>);
+                }).always(function () {
+                    $button.prop('disabled', false);
+                });
+            });
         });
     </script>
 </head>
@@ -290,6 +386,110 @@ $mode = $_REQUEST['mode'] ?? null;
                                     placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
                                     required="required" value='<?php echo attr($c['fax_number'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your SignalWire fax number in E.164 format") ?></small>
+                            </div>
+                            <?php break;
+                        case ServiceType::SINCH: ?> <!-- Sinch Fax -->
+                            <div class="form-group">
+                                <label for="form_sinch_project_id"><?php echo xlt("Project ID") ?> *</label>
+                                <input id="form_sinch_project_id" type="text" name="sinch_project_id" class="form-control"<?php echo $sinchManaged('sinch_project_id') ? ' readonly' : '' ?>
+                                    required="required" value='<?php echo attr($cs('sinch_project_id')) ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Your Sinch Project ID from the Account Dashboard") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_key_id"><?php echo xlt("Access Key ID") ?> *</label>
+                                <input id="form_sinch_key_id" type="text" name="sinch_key_id" class="form-control"<?php echo $sinchManaged('sinch_key_id') ? ' readonly' : '' ?>
+                                    required="required" value='<?php echo attr($cs('sinch_key_id')) ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Your Sinch access key ID") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_key_secret"><?php echo xlt("Access Key Secret") ?> *</label>
+                                <input id="form_sinch_key_secret" type="password" name="sinch_key_secret" class="form-control"<?php echo $sinchManaged('sinch_key_secret') ? ' readonly' : '' ?>
+                                    required="required" value='<?php echo attr($cs('sinch_key_secret')) ?>' />
+                                <small class="form-text text-muted"><?php echo xlt("Shown only once, when the access key is created") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_fax_number"><?php echo xlt("Fax Number") ?> *</label>
+                                <div class="input-group">
+                                    <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control" list="sinch-number-list"<?php echo $sinchManaged('sinch_fax_number') ? ' readonly' : '' ?>
+                                        placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
+                                        required="required" value='<?php echo attr($cs('sinch_fax_number')) ?>' />
+                                    <div class="input-group-append">
+                                        <button id="sinch-lookup" type="button" class="btn btn-outline-secondary">
+                                            <?php echo xlt("Look up") ?>
+                                        </button>
+                                    </div>
+                                </div>
+                                <datalist id="sinch-number-list"></datalist>
+                                <small id="sinch-lookup-status" class="form-text text-muted"><?php echo xlt("Your Sinch fax number in E.164 format. Save your credentials, then Look up to list the numbers on this project.") ?></small>
+                            </div>
+                            <div class="form-group">
+                                <label for="form_sinch_service_id"><?php echo xlt("Service ID") ?></label>
+                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control" list="sinch-service-list"<?php echo $sinchManaged('sinch_service_id') ? ' readonly' : '' ?>
+                                    value='<?php echo attr($cs('sinch_service_id')) ?>' />
+                                <datalist id="sinch-service-list"></datalist>
+                                <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
+                            </div>
+                            <?php if ($sinchManagedKeys !== []) { ?>
+                                <div class="alert alert-info">
+                                    <?php echo xlt("Some credentials are supplied by this server's environment and are shown read-only. Change them where they are deployed, not here."); ?>
+                                </div>
+                            <?php } ?>
+                            <hr />
+                            <h5><?php echo xlt("Inbound Faxes") ?></h5>
+                            <div class="form-group">
+                                <label for="form_sinch_vendor_storage"><?php echo xlt("Document retention at Sinch") ?> *</label>
+                                <select id="form_sinch_vendor_storage" name="sinch_vendor_storage" class="form-control">
+                                    <?php echo VendorDocumentStorage::renderSelectOptions($sinchStorage); ?>
+                                </select>
+                                <small class="form-text text-muted"><?php echo xlt("Must match the Save Fax Documents settings on your Sinch fax service. If Sinch stores nothing, a received fax arrives only in the webhook, so webhook delivery is required and a missed fax has to be re-sent by the sender."); ?></small>
+                            </div>
+                            <div id="sinch-delivery-warning" class="alert alert-warning d-none">
+                                <?php echo xlt("Polling cannot retrieve documents when Sinch stores nothing. Choose webhook delivery, or set Sinch to store documents."); ?>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="form_sinch_inbound_mode"><?php echo xlt("How inbound faxes arrive") ?> *</label>
+                                <select id="form_sinch_inbound_mode" name="sinch_inbound_mode" class="form-control">
+                                    <?php echo InboundIngestMode::renderSelectOptions($sinchMode); ?>
+                                </select>
+                                <small class="form-text text-muted"><?php echo xlt("Polling needs no public endpoint and works behind a firewall. Webhook delivers faxes the moment they arrive, but this server must be reachable from the internet."); ?></small>
+                            </div>
+                            <div class="sinch-webhook">
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_secret"><?php echo xlt("Webhook Secret") ?> *</label>
+                                    <input id="form_sinch_webhook_secret" type="text" name="sinch_webhook_secret" class="form-control"<?php echo $sinchManaged('sinch_webhook_secret') ? ' readonly' : '' ?>
+                                        value='<?php echo attr($sinchSecret) ?>' />
+                                    <small class="form-text text-muted"><?php echo xlt("Sinch does not sign its callbacks, so this secret is what proves a request came from your fax service. Keep it private and treat the webhook URL below as a credential."); ?></small>
+                                </div>
+                                <?php if ($sinchWebhookUrl !== '') { ?>
+                                    <div class="form-group">
+                                        <label for="form_sinch_webhook_url"><?php echo xlt("Webhook URL") ?></label>
+                                        <input id="form_sinch_webhook_url" type="text" class="form-control" readonly
+                                            onclick="this.select()" value='<?php echo attr($sinchWebhookUrl) ?>' />
+                                        <small class="form-text text-muted"><?php echo xlt("Paste this into your Sinch fax service as the Incoming Webhook URL. Set the webhook content type to application/json or multipart/form-data; both are accepted."); ?></small>
+                                    </div>
+                                <?php } else { ?>
+                                    <div class="alert alert-info">
+                                        <?php echo xlt("Save a webhook secret to generate this site's webhook URL."); ?>
+                                    </div>
+                                <?php } ?>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_user"><?php echo xlt("Webhook Basic Auth User") ?></label>
+                                    <input id="form_sinch_webhook_user" type="text" name="sinch_webhook_user" class="form-control"<?php echo $sinchManaged('sinch_webhook_user') ? ' readonly' : '' ?>
+                                        value='<?php echo attr($cs('sinch_webhook_user')) ?>' />
+                                    <small class="form-text text-muted"><?php echo xlt("Optional second layer. Leave blank unless you also embed these credentials in the webhook URL at Sinch."); ?></small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_password"><?php echo xlt("Webhook Basic Auth Password") ?></label>
+                                    <input id="form_sinch_webhook_password" type="password" name="sinch_webhook_password" class="form-control"<?php echo $sinchManaged('sinch_webhook_password') ? ' readonly' : '' ?>
+                                        value='<?php echo attr($cs('sinch_webhook_password')) ?>' />
+                                </div>
+                                <div class="form-group">
+                                    <label for="form_sinch_webhook_allowed_ips"><?php echo xlt("Allowed IP Ranges") ?></label>
+                                    <textarea id="form_sinch_webhook_allowed_ips" rows="2" name="sinch_webhook_allowed_ips"
+                                        class="form-control"><?php echo text($cs('sinch_webhook_allowed_ips')) ?></textarea>
+                                    <small class="form-text text-muted"><?php echo xlt("Optional. Comma separated IPs or CIDR ranges from Sinch's published webhook addresses. Leave blank to accept any source that presents the correct secret."); ?></small>
+                                </div>
                             </div>
                             <?php break;
                         default: break;

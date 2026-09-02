@@ -18,6 +18,7 @@ use OpenEMR\Modules\FaxSMS\Controller\EmailClient;
 use OpenEMR\Modules\FaxSMS\Controller\EtherFaxActions;
 use OpenEMR\Modules\FaxSMS\Controller\RCFaxClient;
 use OpenEMR\Modules\FaxSMS\Controller\SignalWireClient;
+use OpenEMR\Modules\FaxSMS\Controller\SinchFaxClient;
 use OpenEMR\Modules\FaxSMS\Controller\TwilioSMSClient;
 use OpenEMR\Modules\FaxSMS\Controller\VoiceClient;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
@@ -50,6 +51,7 @@ class ServiceFactory
                 ServiceType::RINGCENTRAL->value => fn(): RCFaxClient => new RCFaxClient(),
                 ServiceType::ETHERFAX->value => fn(): EtherFaxActions => new EtherFaxActions(),
                 ServiceType::SIGNALWIRE->value => fn(): SignalWireClient => new SignalWireClient(),
+                ServiceType::SINCH->value => fn(): SinchFaxClient => new SinchFaxClient(),
             ],
             'email' => [
                 ServiceType::EMAIL->value => fn(): EmailClient => new EmailClient(),

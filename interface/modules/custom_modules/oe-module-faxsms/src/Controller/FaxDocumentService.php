@@ -26,6 +26,7 @@ use OpenEMR\Common\ValueObjects\PhoneNumber;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\Exception\FaxDocumentException;
 use OpenEMR\Modules\FaxSMS\Exception\FaxNotFoundException;
+use OpenEMR\Modules\FaxSMS\Service\OutboundFaxRecord;
 use OpenEMR\Modules\FaxSMS\Utils\SignalWireWebhookValidator;
 use OpenEMR\Services\PhoneNumberService;
 use Symfony\Component\Filesystem\Exception\IOException;
@@ -343,6 +344,185 @@ class FaxDocumentService
 
 
     /**
+     * Record an outbound fax as metadata only.
+     *
+     * Sent faxes carry no locally stored document: we already hold whatever we
+     * sent, and the rendered copy stays retrievable from the vendor while it
+     * retains one. Writing the row at send time means the Sent list reflects
+     * the fax immediately rather than after the next ingest sweep, and gives a
+     * completion callback something to update.
+     *
+     * Idempotent by (account, job_id), matching the queue's unique key, so a
+     * retry or a later sweep cannot duplicate the row.
+     *
+     * @return int The queue row id, or 0 when the row already existed.
+     */
+    public function insertOutboundFaxToQueue(
+        OutboundFaxRecord $fax,
+        string $account = '',
+        int $uid = 0
+    ): int {
+        if ($fax->jobId === '') {
+            return 0;
+        }
+        if ($this->getFaxDocument($fax->jobId) !== null) {
+            return 0;
+        }
+
+        $jobId = $fax->jobId;
+        $fromNumber = $fax->from;
+        $toNumber = $fax->to;
+        $status = $fax->status;
+        $sentOn = $fax->sentOnOrNow();
+
+        $faxData = [
+            'JobId' => $jobId,
+            'from' => $fromNumber,
+            'to' => $toNumber,
+            'status' => $status,
+            'direction' => 'outbound',
+            'type' => 'application/pdf',
+            'pages' => $fax->pages,
+            'sentOn' => $sentOn,
+        ];
+
+        QueryUtils::sqlStatementThrowException(
+            "INSERT INTO oe_faxsms_queue
+                (uid, account, job_id, `date`, receive_date, calling_number, called_number, mime,
+                 details_json, status, direction, site_id)
+             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'outbound', ?)",
+            [
+                $uid,
+                $account,
+                $jobId,
+                $sentOn,
+                $fromNumber,
+                $toNumber,
+                'application/pdf',
+                json_encode($faxData),
+                $status,
+                $this->siteId,
+            ]
+        );
+
+        $inserted = QueryUtils::querySingleRow(
+            "SELECT id FROM oe_faxsms_queue WHERE job_id = ? AND site_id = ? ORDER BY `date` DESC LIMIT 1",
+            [$jobId, $this->siteId]
+        );
+
+        $insertedId = $inserted['id'] ?? null;
+
+        return is_numeric($insertedId) ? (int)$insertedId : 0;
+    }
+
+    /**
+     * Read the decrypted bytes of a queued fax.
+     *
+     * Covers both places a queued fax's document can live: still unassigned in
+     * the received-faxes directory (encrypted at rest), or already filed to a
+     * chart as a patient Document. Returning bytes rather than a path keeps the
+     * plaintext off disk for callers that only need to render or stream it.
+     *
+     * @return string|null Null when the fax is unknown or its media is gone.
+     */
+    public function readQueuedFaxContent(string $faxSid): ?string
+    {
+        $fax = $this->getFaxDocument($faxSid);
+        if ($fax === null) {
+            return null;
+        }
+
+        $documentIdRaw = $fax['document_id'] ?? null;
+        $documentId = is_numeric($documentIdRaw) ? (int)$documentIdRaw : 0;
+        if ($documentId > 0) {
+            $data = (new Document($documentId))->get_data();
+
+            return is_string($data) && $data !== '' ? $data : null;
+        }
+
+        $mediaPath = $fax['media_path'] ?? '';
+        if (!is_string($mediaPath) || $mediaPath === '' || !is_file($mediaPath)) {
+            return null;
+        }
+
+        $raw = file_get_contents($mediaPath);
+        if ($raw === false) {
+            return null;
+        }
+
+        try {
+            // decryptFromFilesystem version-prefix-checks first, so a legacy
+            // plaintext file passes through unchanged.
+            $plain = $this->crypto->decryptFromFilesystem($raw);
+        } catch (CryptoGenException $e) {
+            ServiceContainer::getLogger()->error('Failed to decrypt queued fax media', [
+                'exception' => $e,
+                'faxSid' => $faxSid,
+            ]);
+
+            return null;
+        }
+
+        return $plain !== '' ? $plain : null;
+    }
+
+    /**
+     * Record a new vendor status against a queued fax.
+     *
+     * Used by the webhook receiver when a vendor reports the terminal state of
+     * a fax we sent, so the sent list reflects delivery without waiting for the
+     * next poll.
+     *
+     * @return bool True when a matching queue row exists.
+     */
+    public function updateFaxStatus(string $faxSid, string $status): bool
+    {
+        if ($faxSid === '' || $status === '') {
+            return false;
+        }
+
+        QueryUtils::sqlStatementThrowException(
+            "UPDATE oe_faxsms_queue SET status = ? WHERE job_id = ? AND site_id = ?",
+            [$status, $faxSid, $this->siteId]
+        );
+
+        return $this->getFaxDocument($faxSid) !== null;
+    }
+
+    /**
+     * Fetch queued faxes for a date range, newest first.
+     *
+     * The single read behind every queue-backed inbox, so the polling and
+     * webhook ingest modes render from exactly the same rows. Soft-deleted
+     * faxes (the ones a user dismissed) stay out unless explicitly asked for.
+     *
+     * @param string      $dateFrom  'Y-m-d H:i:s' inclusive lower bound.
+     * @param string      $dateTo    'Y-m-d H:i:s' inclusive upper bound.
+     * @param string|null $direction 'inbound' / 'outbound', or null for both.
+     * @return list<array<mixed, mixed>>
+     */
+    public function fetchQueueRange(
+        string $dateFrom,
+        string $dateTo,
+        ?string $direction = null,
+        bool $includeDeleted = false
+    ): array {
+        $sql = "SELECT * FROM oe_faxsms_queue WHERE site_id = ? AND `date` BETWEEN ? AND ?";
+        $binds = [$this->siteId, $dateFrom, $dateTo];
+
+        if ($direction !== null) {
+            $sql .= " AND direction = ?";
+            $binds[] = $direction;
+        }
+        if (!$includeDeleted) {
+            $sql .= " AND deleted = 0";
+        }
+        $sql .= " ORDER BY `date` DESC";
+
+        return QueryUtils::fetchRecords($sql, $binds);
+    }
+
+    /**
      * Attempt to auto-match fax to patient by phone number
      *
      * @param string $fromNumber Sender's phone number
@@ -450,6 +630,10 @@ class FaxDocumentService
                 'status' => 'received',
                 'direction' => 'inbound',
                 'type' => $docType,
+                // Page count travels in the details blob so a queue-backed
+                // inbox can show it without re-querying the vendor.
+                'pages' => is_numeric($faxDetails->PagesReceived ?? null)
+                    ? (int)$faxDetails->PagesReceived : 0,
                 'receivedOn' => $received
             ];
 

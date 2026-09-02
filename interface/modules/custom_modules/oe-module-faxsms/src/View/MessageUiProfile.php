@@ -57,6 +57,7 @@ final class MessageUiProfile
             $service === ServiceType::RINGCENTRAL                       => self::ringCentralSms(),
             $service === ServiceType::ETHERFAX                          => self::etherFax(),
             $service === ServiceType::SIGNALWIRE                        => self::signalWire(),
+            $service === ServiceType::SINCH                             => self::sinch(),
             $service === ServiceType::TWILIO_SMS                        => self::twilioSms(),
             $service === ServiceType::CLICKATELL_SMS                    => self::clickatellSms(),
             $service === ServiceType::EMAIL                             => self::email(),
@@ -124,6 +125,17 @@ final class MessageUiProfile
             ]),
             'upload' => self::dropzone(),
         ];
+    }
+
+    /**
+     * Sinch shares the SignalWire fax layout: a provider-backed inbox and sent
+     * list with no local queue table behind them, plus the upload dropzone.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private static function sinch(): array
+    {
+        return self::signalWire();
     }
 
     /** @return array<string, array<string, mixed>> */

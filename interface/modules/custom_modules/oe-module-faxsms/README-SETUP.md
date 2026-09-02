@@ -20,10 +20,98 @@ The FaxSMS module provides integrated communication services for OpenEMR includi
 - **Fax Services**:
   - RingCentral Fax (ID: 1)
   - etherFAX (ID: 3)
+  - SignalWire Fax (ID: 6)
+  - Sinch Fax (ID: 7)
 - **Email Services**:
   - Built-in Email Client (ID: 4)
 - **Voice Services**:
-  - RC Voice Widgets (ID: 6)
+  - RC Voice Widgets (ID: 9)
+
+### Inbound fax delivery (Sinch)
+
+Sinch fax supports two ways for received faxes to reach OpenEMR, chosen per site
+under **Setup Fax → How inbound faxes arrive**:
+
+- **Polling** (default) — the fax inbox asks Sinch for recent faxes and files any
+  it has not seen. Requires no public endpoint and works on a server the internet
+  cannot reach. Latency is bounded by how often the inbox is opened.
+- **Webhook** — Sinch posts each fax to this server as it arrives. Near-instant
+  and makes no repeated API calls, but this server must be reachable from the
+  internet.
+
+Both modes write into the same `oe_faxsms_queue` table and the inbox renders from
+that queue either way, so switching modes never strands faxes taken in under the
+other one. Webhook mode also re-runs the polling sweep periodically, so a missed
+or misconfigured webhook degrades to polling rather than losing faxes.
+
+#### Finding your fax number
+
+Save your Project ID, key ID and key secret, then press **Look up** beside the
+fax number. The module asks Sinch which fax services exist on the project and
+which numbers are assigned to each, turning both the number and service fields
+into pickers instead of free text — a mistyped number otherwise fails at send
+time rather than at configuration time.
+
+The same lookup reads each service's *Save Fax Documents* setting and sets the
+retention option below to match, so that setting cannot drift out of sync with
+the Sinch dashboard. When a project's services disagree, the retention option is
+left as you set it.
+
+#### Document retention at Sinch
+
+The **Document retention** setting must match the *Save Fax Documents* checkboxes
+on your Sinch fax service. Both postures are supported:
+
+- **Sinch stores documents** (default) — documents can be downloaded on demand,
+  so a missed webhook is recovered by the reconcile sweep and polling alone is a
+  complete delivery mechanism.
+- **Sinch stores nothing** — the maximum-privacy posture. The document arrives in
+  the webhook or not at all, so webhook delivery is required; a fax whose
+  callback never arrived is recorded as `document-not-received` and has to be
+  re-sent by the sender.
+
+Choosing *stores nothing* together with polling cannot deliver documents at all —
+polling learns that a fax arrived but has no way to retrieve it. The setup screen
+warns about that combination and the module logs it.
+
+#### Credentials from the deployment environment
+
+For managed deployments that keep secrets out of the database, credentials can be
+supplied by the environment instead of the setup screen. Precedence is
+environment, then mounted file, then database:
+
+| Setting | Environment variable |
+|---|---|
+| Project ID | `OPENEMR_SINCH_FAX_PROJECT_ID` |
+| Access key ID | `OPENEMR_SINCH_FAX_KEY_ID` |
+| Access key secret | `OPENEMR_SINCH_FAX_KEY_SECRET` |
+| Service ID | `OPENEMR_SINCH_FAX_SERVICE_ID` |
+| Fax number | `OPENEMR_SINCH_FAX_NUMBER` |
+| Webhook secret | `OPENEMR_SINCH_FAX_WEBHOOK_SECRET` |
+| Webhook basic user / password | `OPENEMR_SINCH_FAX_WEBHOOK_USER` / `..._PASSWORD` |
+| Allowed IP ranges | `OPENEMR_SINCH_FAX_WEBHOOK_ALLOWED_IPS` |
+
+Set `OPENEMR_SINCH_FAX_CREDENTIALS_FILE` to the path of a JSON file to load the
+same keys from a mounted secret instead. Externally supplied values appear
+read-only on the setup screen and are never written to the database, so rotating
+a secret is a deployment change and a database backup never contains one.
+
+#### Securing the webhook
+
+Sinch does not sign its callbacks, so the endpoint is protected by what you
+configure, in three independent layers:
+
+1. **Webhook secret** (required) — generated for you on the setup screen and
+   carried in the webhook URL. Treat the whole URL as a credential.
+2. **HTTP Basic credentials** (optional) — Sinch supports credentials embedded in
+   the configured webhook URL.
+3. **Allowed IP ranges** (optional) — comma separated IPs or CIDR ranges from
+   Sinch's published webhook addresses.
+
+The endpoint is inert unless Sinch is the enabled fax vendor, the mode is set to
+webhook, and a secret is configured; otherwise it answers `404`. Set the Sinch
+service's webhook content type to either `application/json` or
+`multipart/form-data` — both are accepted.
 
 ## Setup Process
 

@@ -27,8 +27,11 @@ use OpenEMR\Common\Utils\ValidationUtils;
 use OpenEMR\Common\ValueObjects\PhoneNumber;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\BootstrapService;
+use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Enums\VendorDocumentStorage;
 use OpenEMR\Modules\FaxSMS\Service\CredentialsRepository;
+use OpenEMR\Modules\FaxSMS\Service\ExternalCredentialSource;
 use OpenEMR\Modules\FaxSMS\Service\ServiceFactory;
 use OpenEMR\Services\PatientPortalService;
 use RuntimeException;
@@ -44,7 +47,7 @@ abstract class AppDispatch
 {
     const ACTION_DEFAULT = 'index';
 
-    static $_apiService;
+    static ?AppDispatch $_apiService = null;
     static mixed $_apiModule;
     public string $authErrorDefault;
     public static $timeZone;
@@ -137,6 +140,8 @@ abstract class AppDispatch
         'assignFax' => ['csrf' => true],
         'disposeDocument' => ['csrf' => true],
         'faxProcessUploads' => ['csrf' => true],
+        // Reaches the vendor using stored credentials; setup posts the token.
+        'discoverFaxNumbers' => ['csrf' => true],
         'install' => ['csrf' => true],
     ];
 
@@ -349,9 +354,9 @@ abstract class AppDispatch
      * This is where we decide which Api to use.
      *
      * @param string $type
-     * @return EtherFaxActions|TwilioSMSClient|RCFaxClient|ClickatellSMSClient|EmailClient|SignalWireClient|void|null
+     * @return AppDispatch|null The concrete vendor client for the active service.
      */
-    static function getApiService(string $type)
+    static function getApiService(string $type): ?AppDispatch
     {
         if ($type === '') {
             $session = SessionWrapperFactory::getInstance()->getActiveSession();
@@ -388,7 +393,7 @@ abstract class AppDispatch
         self::$_apiModule = $type;
     }
 
-    static function getServiceInstance($type)
+    static function getServiceInstance($type): AppDispatch
     {
         $moduleType = is_scalar($type) ? (string)$type : '';
         return ServiceFactory::create($moduleType, self::getServiceType());
@@ -524,6 +529,10 @@ abstract class AppDispatch
         if (empty($setup)) {
             $setup = $this->buildSetupFromRequest();
         }
+        // Never persist a credential the deployment supplies: a read-only input
+        // still posts its value, and copying a platform-managed secret into the
+        // database defeats the point of managing it outside the database.
+        $setup = (new ExternalCredentialSource(ServiceContainer::getLogger()))->stripManaged($setup);
         $this->authUser = $this->resolveCredentialOwner();
 
         return $this->credentialsRepository()->storeSetup(self::getModuleVendor(), $this->authUser, $setup);
@@ -558,6 +567,20 @@ abstract class AppDispatch
         $projectId = $this->getRequest('project_id');
         $apiToken = $this->getRequest('api_token');
         $faxNumber = $this->formatPhone($this->getRequest('fax_number') ?? '');
+        // Sinch Fax API v3 specific fields
+        $sinchProjectId = $this->getRequest('sinch_project_id');
+        $sinchKeyId = $this->getRequest('sinch_key_id');
+        $sinchKeySecret = $this->getRequest('sinch_key_secret');
+        $sinchServiceId = $this->getRequest('sinch_service_id');
+        $sinchFaxNumberRaw = $this->getRequest('sinch_fax_number');
+        $sinchFaxNumber = $this->formatPhone(is_scalar($sinchFaxNumberRaw) ? (string)$sinchFaxNumberRaw : '');
+        // Sinch inbound ingest mode and webhook receiver credentials.
+        $sinchInboundMode = $this->getRequest('sinch_inbound_mode');
+        $sinchWebhookSecret = $this->getRequest('sinch_webhook_secret');
+        $sinchWebhookUser = $this->getRequest('sinch_webhook_user');
+        $sinchWebhookPassword = $this->getRequest('sinch_webhook_password');
+        $sinchWebhookAllowedIps = $this->getRequest('sinch_webhook_allowed_ips');
+        $sinchVendorStorage = $this->getRequest('sinch_vendor_storage');
 
         return [
             'username' => "$username",
@@ -584,6 +607,18 @@ abstract class AppDispatch
             'project_id' => $projectId ?? '',
             'api_token' => $apiToken ?? '',
             'fax_number' => $faxNumber,
+            // Sinch credentials
+            'sinch_project_id' => $sinchProjectId ?? '',
+            'sinch_key_id' => $sinchKeyId ?? '',
+            'sinch_key_secret' => $sinchKeySecret ?? '',
+            'sinch_service_id' => $sinchServiceId ?? '',
+            'sinch_fax_number' => $sinchFaxNumber,
+            'sinch_inbound_mode' => InboundIngestMode::fromValue($sinchInboundMode)->value,
+            'sinch_webhook_secret' => $sinchWebhookSecret ?? '',
+            'sinch_webhook_user' => $sinchWebhookUser ?? '',
+            'sinch_webhook_password' => $sinchWebhookPassword ?? '',
+            'sinch_webhook_allowed_ips' => $sinchWebhookAllowedIps ?? '',
+            'sinch_vendor_storage' => VendorDocumentStorage::fromValue($sinchVendorStorage)->value,
         ];
     }
 
