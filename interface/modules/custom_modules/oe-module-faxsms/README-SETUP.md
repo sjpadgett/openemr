@@ -44,6 +44,45 @@ that queue either way, so switching modes never strands faxes taken in under the
 other one. Webhook mode also re-runs the polling sweep periodically, so a missed
 or misconfigured webhook degrades to polling rather than losing faxes.
 
+#### Document retention at Sinch
+
+The **Document retention** setting must match the *Save Fax Documents* checkboxes
+on your Sinch fax service. Both postures are supported:
+
+- **Sinch stores documents** (default) — documents can be downloaded on demand,
+  so a missed webhook is recovered by the reconcile sweep and polling alone is a
+  complete delivery mechanism.
+- **Sinch stores nothing** — the maximum-privacy posture. The document arrives in
+  the webhook or not at all, so webhook delivery is required; a fax whose
+  callback never arrived is recorded as `document-not-received` and has to be
+  re-sent by the sender.
+
+Choosing *stores nothing* together with polling cannot deliver documents at all —
+polling learns that a fax arrived but has no way to retrieve it. The setup screen
+warns about that combination and the module logs it.
+
+#### Credentials from the deployment environment
+
+For managed deployments that keep secrets out of the database, credentials can be
+supplied by the environment instead of the setup screen. Precedence is
+environment, then mounted file, then database:
+
+| Setting | Environment variable |
+|---|---|
+| Project ID | `OPENEMR_SINCH_FAX_PROJECT_ID` |
+| Access key ID | `OPENEMR_SINCH_FAX_KEY_ID` |
+| Access key secret | `OPENEMR_SINCH_FAX_KEY_SECRET` |
+| Service ID | `OPENEMR_SINCH_FAX_SERVICE_ID` |
+| Fax number | `OPENEMR_SINCH_FAX_NUMBER` |
+| Webhook secret | `OPENEMR_SINCH_FAX_WEBHOOK_SECRET` |
+| Webhook basic user / password | `OPENEMR_SINCH_FAX_WEBHOOK_USER` / `..._PASSWORD` |
+| Allowed IP ranges | `OPENEMR_SINCH_FAX_WEBHOOK_ALLOWED_IPS` |
+
+Set `OPENEMR_SINCH_FAX_CREDENTIALS_FILE` to the path of a JSON file to load the
+same keys from a mounted secret instead. Externally supplied values appear
+read-only on the setup screen and are never written to the database, so rotating
+a secret is a deployment change and a database backup never contains one.
+
 #### Securing the webhook
 
 Sinch does not sign its callbacks, so the endpoint is protected by what you

@@ -343,6 +343,74 @@ class FaxDocumentService
 
 
     /**
+     * Record an outbound fax as metadata only.
+     *
+     * Sent faxes carry no locally stored document: we already hold whatever we
+     * sent, and the rendered copy stays retrievable from the vendor while it
+     * retains one. Writing the row at send time means the Sent list reflects
+     * the fax immediately rather than after the next ingest sweep, and gives a
+     * completion callback something to update.
+     *
+     * Idempotent by (account, job_id), matching the queue's unique key, so a
+     * retry or a later sweep cannot duplicate the row.
+     *
+     * @param object $faxDetails JobId, CallingNumber, CalledNumber, SentOn, PagesSent, Status.
+     * @return int The queue row id, or 0 when the row already existed.
+     */
+    public function insertOutboundFaxToQueue(object $faxDetails, string $account = '', int $uid = 0): int
+    {
+        $jobId = (string)($faxDetails->JobId ?? '');
+        if ($jobId === '') {
+            return 0;
+        }
+        if ($this->getFaxDocument($jobId) !== null) {
+            return 0;
+        }
+
+        $fromNumber = (string)($faxDetails->CallingNumber ?? '');
+        $toNumber = (string)($faxDetails->CalledNumber ?? '');
+        $status = (string)($faxDetails->Status ?? 'queued');
+        $sentOn = (string)($faxDetails->SentOn ?? gmdate('Y-m-d H:i:s'));
+
+        $faxData = [
+            'JobId' => $jobId,
+            'from' => $fromNumber,
+            'to' => $toNumber,
+            'status' => $status,
+            'direction' => 'outbound',
+            'type' => 'application/pdf',
+            'pages' => (int)($faxDetails->PagesSent ?? 0),
+            'sentOn' => $sentOn,
+        ];
+
+        QueryUtils::sqlStatementThrowException(
+            "INSERT INTO oe_faxsms_queue
+                (uid, account, job_id, `date`, receive_date, calling_number, called_number, mime,
+                 details_json, status, direction, site_id)
+             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'outbound', ?)",
+            [
+                $uid,
+                $account,
+                $jobId,
+                $sentOn,
+                $fromNumber,
+                $toNumber,
+                'application/pdf',
+                json_encode($faxData),
+                $status,
+                $this->siteId,
+            ]
+        );
+
+        $inserted = QueryUtils::querySingleRow(
+            "SELECT id FROM oe_faxsms_queue WHERE job_id = ? AND site_id = ? ORDER BY `date` DESC LIMIT 1",
+            [$jobId, $this->siteId]
+        );
+
+        return (int)($inserted['id'] ?? 0);
+    }
+
+    /**
      * Read the decrypted bytes of a queued fax.
      *
      * Covers both places a queued fax's document can live: still unassigned in

@@ -19,6 +19,7 @@ use OpenEMR\Modules\FaxSMS\Controller\AppDispatch;
 use OpenEMR\Modules\FaxSMS\Controller\SinchFaxClient;
 use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Enums\VendorDocumentStorage;
 use OpenEMR\Modules\FaxSMS\Webhook\SharedSecretAuthenticator;
 
 $session = SessionWrapperFactory::getInstance()->getActiveSession();
@@ -51,6 +52,11 @@ if ($sinchSecret === '') {
     $sinchSecret = SharedSecretAuthenticator::generateSecret();
 }
 $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhookUrl() : '';
+$sinchStorage = VendorDocumentStorage::fromValue($c['sinch_vendor_storage'] ?? null);
+// Credentials supplied by the platform (environment or a mounted file) are shown
+// read-only: editing them here would be silently overridden at runtime.
+$sinchManagedKeys = $clientApp instanceof SinchFaxClient ? $clientApp->getManagedCredentialKeys() : [];
+$sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys, true);
 ?>
 <!DOCTYPE html>
 <html>
@@ -116,8 +122,12 @@ $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhook
             const syncInboundMode = () => {
                 const isWebhook = $('#form_sinch_inbound_mode').val() === 'webhook';
                 $('.sinch-webhook').toggle(isWebhook);
+                // Polling cannot fetch documents Sinch does not keep, so flag
+                // that combination before it silently produces empty faxes.
+                const storesNothing = $('#form_sinch_vendor_storage').val() === 'none';
+                $('#sinch-delivery-warning').toggleClass('d-none', !(storesNothing && !isWebhook));
             };
-            $('#form_sinch_inbound_mode').on('change', syncInboundMode);
+            $('#form_sinch_inbound_mode, #form_sinch_vendor_storage').on('change', syncInboundMode);
             syncInboundMode();
         });
     </script>
@@ -318,37 +328,53 @@ $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhook
                         case ServiceType::SINCH: ?> <!-- Sinch Fax -->
                             <div class="form-group">
                                 <label for="form_sinch_project_id"><?php echo xlt("Project ID") ?> *</label>
-                                <input id="form_sinch_project_id" type="text" name="sinch_project_id" class="form-control"
+                                <input id="form_sinch_project_id" type="text" name="sinch_project_id" class="form-control"<?php echo $sinchManaged('sinch_project_id') ? ' readonly' : '' ?>
                                     required="required" value='<?php echo attr($c['sinch_project_id'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your Sinch Project ID from the Account Dashboard") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_key_id"><?php echo xlt("Access Key ID") ?> *</label>
-                                <input id="form_sinch_key_id" type="text" name="sinch_key_id" class="form-control"
+                                <input id="form_sinch_key_id" type="text" name="sinch_key_id" class="form-control"<?php echo $sinchManaged('sinch_key_id') ? ' readonly' : '' ?>
                                     required="required" value='<?php echo attr($c['sinch_key_id'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your Sinch access key ID") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_key_secret"><?php echo xlt("Access Key Secret") ?> *</label>
-                                <input id="form_sinch_key_secret" type="password" name="sinch_key_secret" class="form-control"
+                                <input id="form_sinch_key_secret" type="password" name="sinch_key_secret" class="form-control"<?php echo $sinchManaged('sinch_key_secret') ? ' readonly' : '' ?>
                                     required="required" value='<?php echo attr($c['sinch_key_secret'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Shown only once, when the access key is created") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_fax_number"><?php echo xlt("Fax Number") ?> *</label>
-                                <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control"
+                                <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control"<?php echo $sinchManaged('sinch_fax_number') ? ' readonly' : '' ?>
                                     placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
                                     required="required" value='<?php echo attr($c['sinch_fax_number'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your Sinch fax number in E.164 format") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_service_id"><?php echo xlt("Service ID") ?></label>
-                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control"
+                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control"<?php echo $sinchManaged('sinch_service_id') ? ' readonly' : '' ?>
                                     value='<?php echo attr($c['sinch_service_id'] ?? '') ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
                             </div>
+                            <?php if ($sinchManagedKeys !== []) { ?>
+                                <div class="alert alert-info">
+                                    <?php echo xlt("Some credentials are supplied by this server's environment and are shown read-only. Change them where they are deployed, not here."); ?>
+                                </div>
+                            <?php } ?>
                             <hr />
                             <h5><?php echo xlt("Inbound Faxes") ?></h5>
+                            <div class="form-group">
+                                <label for="form_sinch_vendor_storage"><?php echo xlt("Document retention at Sinch") ?> *</label>
+                                <select id="form_sinch_vendor_storage" name="sinch_vendor_storage" class="form-control">
+                                    <?php echo VendorDocumentStorage::renderSelectOptions($sinchStorage); ?>
+                                </select>
+                                <small class="form-text text-muted"><?php echo xlt("Must match the Save Fax Documents settings on your Sinch fax service. If Sinch stores nothing, a received fax arrives only in the webhook, so webhook delivery is required and a missed fax has to be re-sent by the sender."); ?></small>
+                            </div>
+                            <div id="sinch-delivery-warning" class="alert alert-warning d-none">
+                                <?php echo xlt("Polling cannot retrieve documents when Sinch stores nothing. Choose webhook delivery, or set Sinch to store documents."); ?>
+                            </div>
+
                             <div class="form-group">
                                 <label for="form_sinch_inbound_mode"><?php echo xlt("How inbound faxes arrive") ?> *</label>
                                 <select id="form_sinch_inbound_mode" name="sinch_inbound_mode" class="form-control">
@@ -359,7 +385,7 @@ $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhook
                             <div class="sinch-webhook">
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_secret"><?php echo xlt("Webhook Secret") ?> *</label>
-                                    <input id="form_sinch_webhook_secret" type="text" name="sinch_webhook_secret" class="form-control"
+                                    <input id="form_sinch_webhook_secret" type="text" name="sinch_webhook_secret" class="form-control"<?php echo $sinchManaged('sinch_webhook_secret') ? ' readonly' : '' ?>
                                         value='<?php echo attr($sinchSecret) ?>' />
                                     <small class="form-text text-muted"><?php echo xlt("Sinch does not sign its callbacks, so this secret is what proves a request came from your fax service. Keep it private and treat the webhook URL below as a credential."); ?></small>
                                 </div>
@@ -377,13 +403,13 @@ $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhook
                                 <?php } ?>
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_user"><?php echo xlt("Webhook Basic Auth User") ?></label>
-                                    <input id="form_sinch_webhook_user" type="text" name="sinch_webhook_user" class="form-control"
+                                    <input id="form_sinch_webhook_user" type="text" name="sinch_webhook_user" class="form-control"<?php echo $sinchManaged('sinch_webhook_user') ? ' readonly' : '' ?>
                                         value='<?php echo attr($c['sinch_webhook_user'] ?? '') ?>' />
                                     <small class="form-text text-muted"><?php echo xlt("Optional second layer. Leave blank unless you also embed these credentials in the webhook URL at Sinch."); ?></small>
                                 </div>
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_password"><?php echo xlt("Webhook Basic Auth Password") ?></label>
-                                    <input id="form_sinch_webhook_password" type="password" name="sinch_webhook_password" class="form-control"
+                                    <input id="form_sinch_webhook_password" type="password" name="sinch_webhook_password" class="form-control"<?php echo $sinchManaged('sinch_webhook_password') ? ' readonly' : '' ?>
                                         value='<?php echo attr($c['sinch_webhook_password'] ?? '') ?>' />
                                 </div>
                                 <div class="form-group">

@@ -38,14 +38,17 @@ namespace OpenEMR\Modules\FaxSMS\Controller;
 use OpenEMR\BC\ServiceContainer;
 use OpenEMR\Common\Crypto\CryptoGenException;
 use OpenEMR\Common\Crypto\CryptoInterface;
+use OpenEMR\Common\Database\QueryUtils;
 use OpenEMR\Common\Http\CurrentRequest;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxChannelInterface;
 use OpenEMR\Modules\FaxSMS\Contracts\FaxDocumentDisposalInterface;
 use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Enums\VendorDocumentStorage;
 use OpenEMR\Modules\FaxSMS\RestClient\Sinch\Rest\Client;
 use OpenEMR\Modules\FaxSMS\RestClient\Sinch\Rest\FaxInstance;
+use OpenEMR\Modules\FaxSMS\Service\ExternalCredentialSource;
 use OpenEMR\Modules\FaxSMS\Service\FaxMailer;
 use OpenEMR\Modules\FaxSMS\Service\FaxUploadStaging;
 use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxContentFetcherInterface;
@@ -100,6 +103,9 @@ class SinchFaxClient extends AppDispatch implements
     private string $webhookBasicUser = '';
     private string $webhookBasicPassword = '';
     private string $webhookAllowedIps = '';
+    private VendorDocumentStorage $vendorStorage = VendorDocumentStorage::RETAINED;
+    /** @var list<string> Credential keys supplied by the environment rather than the database. */
+    private array $managedCredentialKeys = [];
 
     public function __construct()
     {
@@ -133,7 +139,12 @@ class SinchFaxClient extends AppDispatch implements
      */
     public function getCredentials(): mixed
     {
-        $credentials = AppDispatch::getSetup();
+        $stored = AppDispatch::getSetup();
+        // Managed deployments supply secrets from the platform rather than the
+        // database; the overlay is a no-op when nothing external is configured.
+        $external = new ExternalCredentialSource(ServiceContainer::getLogger());
+        $credentials = $external->apply(is_array($stored) ? $stored : []);
+        $this->managedCredentialKeys = $external->managedKeys();
 
         $this->projectId = $this->credentialString($credentials, 'sinch_project_id');
         $this->keyId = $this->credentialString($credentials, 'sinch_key_id');
@@ -142,13 +153,12 @@ class SinchFaxClient extends AppDispatch implements
         // Ensure the 'from' fax number is always in E.164 format.
         $this->faxNumber = $this->formatPhone($this->credentialString($credentials, 'sinch_fax_number'));
 
-        $this->ingestMode = InboundIngestMode::fromValue(
-            is_array($credentials) ? ($credentials['sinch_inbound_mode'] ?? null) : null
-        );
+        $this->ingestMode = InboundIngestMode::fromValue($credentials['sinch_inbound_mode'] ?? null);
         $this->webhookSecret = $this->credentialString($credentials, 'sinch_webhook_secret');
         $this->webhookBasicUser = $this->credentialString($credentials, 'sinch_webhook_user');
         $this->webhookBasicPassword = $this->credentialString($credentials, 'sinch_webhook_password');
         $this->webhookAllowedIps = $this->credentialString($credentials, 'sinch_webhook_allowed_ips');
+        $this->vendorStorage = VendorDocumentStorage::fromValue($credentials['sinch_vendor_storage'] ?? null);
 
         return $credentials;
     }
@@ -304,6 +314,15 @@ class SinchFaxClient extends AppDispatch implements
             if ($this->serviceId !== '') {
                 $options['serviceId'] = $this->serviceId;
             }
+            // Ask Sinch to report completion to our own endpoint when one is
+            // configured, so the Sent list reflects delivery without waiting
+            // for the next ingest sweep. JSON keeps the callback small: we
+            // already hold the document we sent and do not want it posted back.
+            $callbackUrl = $this->getWebhookUrl();
+            if ($callbackUrl !== '' && $this->ingestMode === InboundIngestMode::WEBHOOK) {
+                $options['callbackUrl'] = $callbackUrl;
+                $options['callbackUrlContentType'] = 'application/json';
+            }
 
             $faxes = $this->client->fax->v3->faxes->create($options);
 
@@ -319,6 +338,8 @@ class SinchFaxClient extends AppDispatch implements
                 ]);
                 return xlt('Error: The fax was rejected by the provider.');
             }
+
+            $this->recordOutboundFax($accepted, $phone);
 
             return xlt('Fax Successfully Sent') . ($error ? ('<br />' . xlt('Email Failed')) : '');
         } catch (\RuntimeException | CryptoGenException $e) {
@@ -383,6 +404,107 @@ class SinchFaxClient extends AppDispatch implements
             str_starts_with($bytes, "\xFF\xD8\xFF") => 'JPG',
             default => 'PDF',
         };
+    }
+
+    /**
+     * Status recorded for an inbound fax whose document we do not have.
+     *
+     * With vendor storage off this is terminal and actionable: the callback was
+     * the only chance to receive the document, so the fax has to be re-sent.
+     * With storage on it is usually transient - the sweep saw a fax mid-receive,
+     * or one whose document was already filed and released - so it is recorded
+     * as pending rather than as a failure the user must chase.
+     */
+    private function missingDocumentStatus(): string
+    {
+        return $this->vendorStorage->isFetchable() ? 'no-document' : 'document-not-received';
+    }
+
+    /**
+     * Whether the configured combination can actually deliver inbound
+     * documents. Vendor storage off with polling cannot: polling learns that a
+     * fax arrived but has no way to retrieve it, so every inbound fax would
+     * land as an empty row.
+     */
+    public function hasDeliverableInboundConfiguration(): bool
+    {
+        return $this->ingestMode === InboundIngestMode::WEBHOOK
+            || $this->vendorStorage->supportsPollOnlyDelivery();
+    }
+
+    /**
+     * Credential keys supplied by the environment rather than the setup screen.
+     *
+     * @return list<string>
+     */
+    public function getManagedCredentialKeys(): array
+    {
+        return $this->managedCredentialKeys;
+    }
+
+    /** The configured vendor document-retention posture. */
+    public function getVendorStorage(): VendorDocumentStorage
+    {
+        return $this->vendorStorage;
+    }
+
+    /**
+     * Queue an accepted outbound fax so the Sent list shows it immediately.
+     *
+     * Failing here must not fail the send: the fax is already with Sinch, and
+     * the next ingest sweep will pick it up regardless.
+     */
+    private function recordOutboundFax(?FaxInstance $accepted, string $to): void
+    {
+        if (!$accepted instanceof FaxInstance || ($accepted->id ?? '') === '') {
+            return;
+        }
+        try {
+            $record = new \stdClass();
+            $record->JobId = (string)$accepted->id;
+            $record->CallingNumber = $this->faxNumber;
+            $record->CalledNumber = $to;
+            $record->Status = strtolower((string)($accepted->status ?? 'queued'));
+            $record->PagesSent = (int)($accepted->numberOfPages ?? 0);
+            $record->SentOn = $accepted->createTime instanceof \DateTimeImmutable
+                ? $accepted->createTime->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+                : gmdate('Y-m-d H:i:s');
+
+            (new FaxDocumentService())->insertOutboundFaxToQueue($record, $this->queueAccount());
+        } catch (\RuntimeException $e) {
+            ServiceContainer::getLogger()->warning('Sinch send succeeded but the sent fax could not be queued', [
+                'exception' => $e,
+                'faxId' => $accepted->id,
+            ]);
+        }
+    }
+
+    /**
+     * Serialize ingest sweeps across application servers.
+     *
+     * The reconcile marker is a filesystem mtime, which throttles correctly on
+     * one node but lets a load-balanced deployment stampede: every node's first
+     * inbox view would sweep at once, each downloading the same documents. A
+     * MySQL advisory lock is honoured by every node against the same database
+     * and needs no schema, so it holds wherever the site is deployed.
+     *
+     * Returns false when another node holds the lock, in which case this
+     * request simply renders the queue - the other node is already ingesting.
+     */
+    private function withIngestLock(callable $work): bool
+    {
+        $lockName = 'oe_faxsms_sinch_ingest_' . substr(sha1($this->queueAccount()), 0, 16);
+        $acquired = QueryUtils::fetchSingleValue('SELECT GET_LOCK(?, 0) AS locked', 'locked', [$lockName]);
+        if (!is_numeric($acquired) || (int)$acquired !== 1) {
+            return false;
+        }
+        try {
+            $work();
+        } finally {
+            QueryUtils::fetchSingleValue('SELECT RELEASE_LOCK(?) AS released', 'released', [$lockName]);
+        }
+
+        return true;
     }
 
     /**
@@ -530,6 +652,13 @@ class SinchFaxClient extends AppDispatch implements
 
                 $payload = $this->toInboundPayload($fax, $isInbound);
                 $documents->insertInboundFaxToQueue($this->toQueueRecord($payload), $account);
+                if ($isInbound && !$payload->hasContent()) {
+                    // The fax exists but its document does not: either Sinch was
+                    // told to keep nothing and the callback never arrived, or the
+                    // document has already been released. Say so on the row
+                    // rather than leaving a blank entry the user cannot act on.
+                    $documents->updateFaxStatus($payload->faxId, $this->missingDocumentStatus());
+                }
                 $ingested++;
             } catch (\RuntimeException $e) {
                 // One bad fax must not abort the sweep.
@@ -551,7 +680,12 @@ class SinchFaxClient extends AppDispatch implements
     {
         $faxId = (string)$fax->id;
         $content = null;
-        if ($isInbound && $fax->status === 'COMPLETED' && $fax->hasFile !== false) {
+        if (
+            $isInbound
+            && $this->vendorStorage->isFetchable()
+            && $fax->status === 'COMPLETED'
+            && $fax->hasFile !== false
+        ) {
             $content = $this->downloadFaxContent($faxId);
         }
 
@@ -598,21 +732,32 @@ class SinchFaxClient extends AppDispatch implements
      */
     private function ingestIfDue(): void
     {
-        $interval = $this->ingestMode->reconcileIntervalSeconds();
-        if ($interval === 0) {
-            $this->ingestInboundFaxes();
-            return;
+        if (!$this->hasDeliverableInboundConfiguration()) {
+            ServiceContainer::getLogger()->warning(
+                'Sinch is set to polling while vendor document storage is off; '
+                . 'inbound faxes will arrive without documents. Switch to webhook delivery '
+                . 'or re-enable document storage on the Sinch fax service.'
+            );
         }
 
+        $interval = $this->ingestMode->reconcileIntervalSeconds();
         $marker = $this->reconcileMarkerPath();
-        if ($marker !== null && is_file($marker) && (time() - (int)filemtime($marker)) < $interval) {
-            return;
+
+        if ($interval > 0) {
+            if ($marker !== null && is_file($marker) && (time() - (int)filemtime($marker)) < $interval) {
+                return;
+            }
         }
         if ($marker !== null) {
-            // Touch before the sweep so concurrent views do not all sweep.
+            // Touch before the sweep so concurrent views on this node do not all
+            // queue behind the lock only to find nothing left to do.
             @touch($marker);
         }
-        $this->ingestInboundFaxes();
+
+        // Across nodes, the advisory lock is what prevents a stampede.
+        $this->withIngestLock(function (): void {
+            $this->ingestInboundFaxes();
+        });
     }
 
     private function reconcileMarkerPath(): ?string
@@ -945,7 +1090,7 @@ class SinchFaxClient extends AppDispatch implements
      */
     private function downloadFaxContent(string $faxId): ?string
     {
-        if ($this->client === null || $faxId === '') {
+        if ($this->client === null || $faxId === '' || !$this->vendorStorage->isFetchable()) {
             return null;
         }
         try {
@@ -964,7 +1109,9 @@ class SinchFaxClient extends AppDispatch implements
      */
     private function releaseUpstreamDocument(string $faxId): bool
     {
-        if ($this->client === null || $faxId === '') {
+        if ($this->client === null || $faxId === '' || !$this->vendorStorage->isFetchable()) {
+            // With vendor storage off there is nothing held upstream to release,
+            // so the call would only ever be a logged 404.
             return false;
         }
         try {

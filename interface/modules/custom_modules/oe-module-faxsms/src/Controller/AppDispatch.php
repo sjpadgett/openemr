@@ -29,7 +29,9 @@ use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\BootstrapService;
 use OpenEMR\Modules\FaxSMS\Enums\InboundIngestMode;
 use OpenEMR\Modules\FaxSMS\Enums\ServiceType;
+use OpenEMR\Modules\FaxSMS\Enums\VendorDocumentStorage;
 use OpenEMR\Modules\FaxSMS\Service\CredentialsRepository;
+use OpenEMR\Modules\FaxSMS\Service\ExternalCredentialSource;
 use OpenEMR\Modules\FaxSMS\Service\ServiceFactory;
 use OpenEMR\Services\PatientPortalService;
 use RuntimeException;
@@ -525,6 +527,10 @@ abstract class AppDispatch
         if (empty($setup)) {
             $setup = $this->buildSetupFromRequest();
         }
+        // Never persist a credential the deployment supplies: a read-only input
+        // still posts its value, and copying a platform-managed secret into the
+        // database defeats the point of managing it outside the database.
+        $setup = (new ExternalCredentialSource(ServiceContainer::getLogger()))->stripManaged($setup);
         $this->authUser = $this->resolveCredentialOwner();
 
         return $this->credentialsRepository()->storeSetup(self::getModuleVendor(), $this->authUser, $setup);
@@ -571,6 +577,7 @@ abstract class AppDispatch
         $sinchWebhookUser = $this->getRequest('sinch_webhook_user');
         $sinchWebhookPassword = $this->getRequest('sinch_webhook_password');
         $sinchWebhookAllowedIps = $this->getRequest('sinch_webhook_allowed_ips');
+        $sinchVendorStorage = $this->getRequest('sinch_vendor_storage');
 
         return [
             'username' => "$username",
@@ -608,6 +615,7 @@ abstract class AppDispatch
             'sinch_webhook_user' => $sinchWebhookUser ?? '',
             'sinch_webhook_password' => $sinchWebhookPassword ?? '',
             'sinch_webhook_allowed_ips' => $sinchWebhookAllowedIps ?? '',
+            'sinch_vendor_storage' => VendorDocumentStorage::fromValue($sinchVendorStorage)->value,
         ];
     }
 

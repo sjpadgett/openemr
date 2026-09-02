@@ -89,7 +89,8 @@ class CredentialsRepository
                 'sinch_webhook_secret' => '',
                 'sinch_webhook_user' => '',
                 'sinch_webhook_password' => '',
-                'sinch_webhook_allowed_ips' => ''
+                'sinch_webhook_allowed_ips' => '',
+                'sinch_vendor_storage' => 'retained'
             ];
         }
 
