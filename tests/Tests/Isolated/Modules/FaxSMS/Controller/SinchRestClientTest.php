@@ -120,13 +120,13 @@ final class SinchRestClientTest extends TestCase
         self::assertIsArray($body);
         self::assertSame('+15551234567', $body['to'] ?? null);
         self::assertSame('+15557654321', $body['from'] ?? null);
+        $files = $body['files'] ?? null;
+        self::assertIsArray($files);
+        self::assertIsArray($files[0] ?? null);
         // The document must travel as base64 in the body — never as a URL the
         // provider has to reach back into this server for.
-        self::assertSame(
-            base64_encode('%PDF-1.4 body bytes'),
-            $body['files'][0]['file'] ?? null
-        );
-        self::assertSame('PDF', $body['files'][0]['fileType'] ?? null, 'fileType is normalized to upper case.');
+        self::assertSame(base64_encode('%PDF-1.4 body bytes'), $files[0]['file'] ?? null);
+        self::assertSame('PDF', $files[0]['fileType'] ?? null, 'fileType is normalized to upper case.');
         self::assertArrayNotHasKey('contentUrl', $body);
     }
 
@@ -152,7 +152,6 @@ final class SinchRestClientTest extends TestCase
         ]);
 
         self::assertCount(2, $faxes);
-        self::assertContainsOnlyInstancesOf(FaxInstance::class, $faxes);
         self::assertSame(['FAXA', 'FAXB'], array_map(static fn(FaxInstance $f): ?string => $f->id, $faxes));
 
         $body = json_decode((string) $this->lastRequest($history)->getBody(), true);
@@ -191,7 +190,10 @@ final class SinchRestClientTest extends TestCase
         self::assertSame('svc_123', $body['serviceId'] ?? null);
         self::assertSame('Clinic', $body['headerText'] ?? null);
         self::assertSame(2, $body['maxRetries'] ?? null);
-        self::assertSame('PDF', $body['files'][0]['fileType'] ?? null, 'fileType defaults to PDF.');
+        $files = $body['files'] ?? null;
+        self::assertIsArray($files);
+        self::assertIsArray($files[0] ?? null);
+        self::assertSame('PDF', $files[0]['fileType'] ?? null, 'fileType defaults to PDF.');
     }
 
     public function testReadAppliesFiltersAndRangeParameterNames(): void
@@ -550,9 +552,8 @@ final class SinchRestClientTest extends TestCase
      * @param list<Response>         $responses
      * @param list<RequestInterface> $history
      */
-    private function makeClient(array $responses, ?array &$history = null): Client
+    private function makeClient(array $responses, array &$history): Client
     {
-        $history ??= [];
         $mock = new MockHandler($responses);
         $stack = HandlerStack::create($mock);
         $this->recordRequestsInto($stack, $history);
@@ -586,7 +587,10 @@ final class SinchRestClientTest extends TestCase
     private function lastRequest(array $history): RequestInterface
     {
         self::assertNotEmpty($history, 'Expected at least one HTTP request to have been made.');
-        return end($history);
+        $last = end($history);
+        self::assertInstanceOf(RequestInterface::class, $last);
+
+        return $last;
     }
 
     private function expectedBasicAuthHeader(): string

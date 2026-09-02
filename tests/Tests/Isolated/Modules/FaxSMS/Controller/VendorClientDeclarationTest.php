@@ -106,6 +106,8 @@ final class VendorClientDeclarationTest extends TestCase
      * The base declares $credentials untyped, and PHP forbids a child adding a
      * type to an inherited untyped property. Pinning this stops the next vendor
      * from reintroducing the fatal by "tidying up" the property.
+     *
+     * @param class-string $class
      */
     #[DataProvider('faxVendorClientProvider')]
     public function testCredentialsPropertyStaysCompatibleWithTheBase(string $class): void

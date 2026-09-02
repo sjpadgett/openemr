@@ -64,8 +64,13 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
     {
         public function testStoredValuesAreStable(): void
         {
-            self::assertSame('retained', VendorDocumentStorage::RETAINED->value);
-            self::assertSame('none', VendorDocumentStorage::NONE->value);
+            self::assertSame(
+                ['retained', 'none'],
+                array_map(
+                    static fn(VendorDocumentStorage $s): string => $s->value,
+                    VendorDocumentStorage::cases()
+                )
+            );
         }
 
         /**

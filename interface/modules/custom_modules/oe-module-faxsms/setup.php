@@ -37,7 +37,15 @@ $service = $clientApp::getServiceType();
 if (!$clientApp->verifyAcl()) {
     die("<h3>" . xlt("Not Authorised!") . "</h3>");
 }
-$c = $clientApp->getCredentials();
+$credentialsRaw = $clientApp->getCredentials();
+// Narrow once here rather than at every read below: getCredentials() is declared
+// mixed for the legacy vendors, and the form is nothing but reads off this array.
+$c = is_array($credentialsRaw) ? $credentialsRaw : [];
+/** Read one credential as a string, whatever the stored shape. */
+$cs = static function (string $key) use ($c): string {
+    $value = $c[$key] ?? '';
+    return is_scalar($value) ? (string)$value : '';
+};
 $serviceEnum = ServiceType::fromValue($service);
 $title = $serviceEnum->getTranslatedDisplayName();
 $module_config = $_REQUEST['module_config'] ?? 0;
@@ -46,13 +54,13 @@ $mode = $_REQUEST['mode'] ?? null;
 // Sinch inbound-mode view state. A site with no secret yet is offered a freshly
 // generated one so enabling webhooks is a single save rather than a hunt for a
 // random-string generator.
-$sinchMode = InboundIngestMode::fromValue($c['sinch_inbound_mode'] ?? null);
-$sinchSecret = (string)($c['sinch_webhook_secret'] ?? '');
+$sinchMode = InboundIngestMode::fromValue($cs('sinch_inbound_mode'));
+$sinchSecret = $cs('sinch_webhook_secret');
 if ($sinchSecret === '') {
     $sinchSecret = SharedSecretAuthenticator::generateSecret();
 }
 $sinchWebhookUrl = $clientApp instanceof SinchFaxClient ? $clientApp->getWebhookUrl() : '';
-$sinchStorage = VendorDocumentStorage::fromValue($c['sinch_vendor_storage'] ?? null);
+$sinchStorage = VendorDocumentStorage::fromValue($cs('sinch_vendor_storage'));
 // Credentials supplied by the platform (environment or a mounted file) are shown
 // read-only: editing them here would be silently overridden at runtime.
 $sinchManagedKeys = $clientApp instanceof SinchFaxClient ? $clientApp->getManagedCredentialKeys() : [];
@@ -384,19 +392,19 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
                             <div class="form-group">
                                 <label for="form_sinch_project_id"><?php echo xlt("Project ID") ?> *</label>
                                 <input id="form_sinch_project_id" type="text" name="sinch_project_id" class="form-control"<?php echo $sinchManaged('sinch_project_id') ? ' readonly' : '' ?>
-                                    required="required" value='<?php echo attr($c['sinch_project_id'] ?? '') ?>' />
+                                    required="required" value='<?php echo attr($cs('sinch_project_id')) ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your Sinch Project ID from the Account Dashboard") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_key_id"><?php echo xlt("Access Key ID") ?> *</label>
                                 <input id="form_sinch_key_id" type="text" name="sinch_key_id" class="form-control"<?php echo $sinchManaged('sinch_key_id') ? ' readonly' : '' ?>
-                                    required="required" value='<?php echo attr($c['sinch_key_id'] ?? '') ?>' />
+                                    required="required" value='<?php echo attr($cs('sinch_key_id')) ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Your Sinch access key ID") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_key_secret"><?php echo xlt("Access Key Secret") ?> *</label>
                                 <input id="form_sinch_key_secret" type="password" name="sinch_key_secret" class="form-control"<?php echo $sinchManaged('sinch_key_secret') ? ' readonly' : '' ?>
-                                    required="required" value='<?php echo attr($c['sinch_key_secret'] ?? '') ?>' />
+                                    required="required" value='<?php echo attr($cs('sinch_key_secret')) ?>' />
                                 <small class="form-text text-muted"><?php echo xlt("Shown only once, when the access key is created") ?></small>
                             </div>
                             <div class="form-group">
@@ -404,7 +412,7 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
                                 <div class="input-group">
                                     <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control" list="sinch-number-list"<?php echo $sinchManaged('sinch_fax_number') ? ' readonly' : '' ?>
                                         placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
-                                        required="required" value='<?php echo attr($c['sinch_fax_number'] ?? '') ?>' />
+                                        required="required" value='<?php echo attr($cs('sinch_fax_number')) ?>' />
                                     <div class="input-group-append">
                                         <button id="sinch-lookup" type="button" class="btn btn-outline-secondary">
                                             <?php echo xlt("Look up") ?>
@@ -417,7 +425,7 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
                             <div class="form-group">
                                 <label for="form_sinch_service_id"><?php echo xlt("Service ID") ?></label>
                                 <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control" list="sinch-service-list"<?php echo $sinchManaged('sinch_service_id') ? ' readonly' : '' ?>
-                                    value='<?php echo attr($c['sinch_service_id'] ?? '') ?>' />
+                                    value='<?php echo attr($cs('sinch_service_id')) ?>' />
                                 <datalist id="sinch-service-list"></datalist>
                                 <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
                             </div>
@@ -468,18 +476,18 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_user"><?php echo xlt("Webhook Basic Auth User") ?></label>
                                     <input id="form_sinch_webhook_user" type="text" name="sinch_webhook_user" class="form-control"<?php echo $sinchManaged('sinch_webhook_user') ? ' readonly' : '' ?>
-                                        value='<?php echo attr($c['sinch_webhook_user'] ?? '') ?>' />
+                                        value='<?php echo attr($cs('sinch_webhook_user')) ?>' />
                                     <small class="form-text text-muted"><?php echo xlt("Optional second layer. Leave blank unless you also embed these credentials in the webhook URL at Sinch."); ?></small>
                                 </div>
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_password"><?php echo xlt("Webhook Basic Auth Password") ?></label>
                                     <input id="form_sinch_webhook_password" type="password" name="sinch_webhook_password" class="form-control"<?php echo $sinchManaged('sinch_webhook_password') ? ' readonly' : '' ?>
-                                        value='<?php echo attr($c['sinch_webhook_password'] ?? '') ?>' />
+                                        value='<?php echo attr($cs('sinch_webhook_password')) ?>' />
                                 </div>
                                 <div class="form-group">
                                     <label for="form_sinch_webhook_allowed_ips"><?php echo xlt("Allowed IP Ranges") ?></label>
                                     <textarea id="form_sinch_webhook_allowed_ips" rows="2" name="sinch_webhook_allowed_ips"
-                                        class="form-control"><?php echo text($c['sinch_webhook_allowed_ips'] ?? '') ?></textarea>
+                                        class="form-control"><?php echo text($cs('sinch_webhook_allowed_ips')) ?></textarea>
                                     <small class="form-text text-muted"><?php echo xlt("Optional. Comma separated IPs or CIDR ranges from Sinch's published webhook addresses. Leave blank to accept any source that presents the correct secret."); ?></small>
                                 </div>
                             </div>

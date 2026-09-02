@@ -195,10 +195,15 @@ final class InboundFaxWebhookTest extends TestCase
             ->with(
                 self::callback(static function (object $record): bool {
                     // Shaped for FaxDocumentService, which base64-decodes FaxImage.
-                    return $record->JobId === 'FAXin1'
-                        && $record->CallingNumber === '+15550001111'
-                        && base64_decode((string)$record->FaxImage, true) === self::PDF
-                        && $record->DocumentParams->Type === 'application/pdf';
+                    $fields = get_object_vars($record);
+                    $params = $fields['DocumentParams'] ?? null;
+
+                    return ($fields['JobId'] ?? null) === 'FAXin1'
+                        && ($fields['CallingNumber'] ?? null) === '+15550001111'
+                        && is_string($fields['FaxImage'] ?? null)
+                        && base64_decode($fields['FaxImage'], true) === self::PDF
+                        && $params instanceof \stdClass
+                        && ($params->Type ?? null) === 'application/pdf';
                 }),
                 'proj-123'
             );
@@ -242,7 +247,11 @@ final class InboundFaxWebhookTest extends TestCase
         $documents->expects(self::once())
             ->method('insertInboundFaxToQueue')
             ->with(self::callback(
-                static fn(object $record): bool => base64_decode((string)$record->FaxImage, true) === self::PDF
+                static function (object $record): bool {
+                    $image = get_object_vars($record)['FaxImage'] ?? null;
+
+                    return is_string($image) && base64_decode($image, true) === self::PDF;
+                }
             ));
 
         $fetcher = new class implements InboundFaxContentFetcherInterface {

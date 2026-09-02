@@ -47,7 +47,7 @@ abstract class AppDispatch
 {
     const ACTION_DEFAULT = 'index';
 
-    static $_apiService;
+    static ?AppDispatch $_apiService = null;
     static mixed $_apiModule;
     public string $authErrorDefault;
     public static $timeZone;
@@ -354,9 +354,9 @@ abstract class AppDispatch
      * This is where we decide which Api to use.
      *
      * @param string $type
-     * @return EtherFaxActions|TwilioSMSClient|RCFaxClient|ClickatellSMSClient|EmailClient|SignalWireClient|void|null
+     * @return AppDispatch|null The concrete vendor client for the active service.
      */
-    static function getApiService(string $type)
+    static function getApiService(string $type): ?AppDispatch
     {
         if ($type === '') {
             $session = SessionWrapperFactory::getInstance()->getActiveSession();
@@ -393,7 +393,7 @@ abstract class AppDispatch
         self::$_apiModule = $type;
     }
 
-    static function getServiceInstance($type)
+    static function getServiceInstance($type): AppDispatch
     {
         $moduleType = is_scalar($type) ? (string)$type : '';
         return ServiceFactory::create($moduleType, self::getServiceType());
@@ -572,7 +572,8 @@ abstract class AppDispatch
         $sinchKeyId = $this->getRequest('sinch_key_id');
         $sinchKeySecret = $this->getRequest('sinch_key_secret');
         $sinchServiceId = $this->getRequest('sinch_service_id');
-        $sinchFaxNumber = $this->formatPhone($this->getRequest('sinch_fax_number') ?? '');
+        $sinchFaxNumberRaw = $this->getRequest('sinch_fax_number');
+        $sinchFaxNumber = $this->formatPhone(is_scalar($sinchFaxNumberRaw) ? (string)$sinchFaxNumberRaw : '');
         // Sinch inbound ingest mode and webhook receiver credentials.
         $sinchInboundMode = $this->getRequest('sinch_inbound_mode');
         $sinchWebhookSecret = $this->getRequest('sinch_webhook_secret');

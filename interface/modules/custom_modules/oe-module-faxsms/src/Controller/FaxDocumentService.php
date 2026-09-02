@@ -26,6 +26,7 @@ use OpenEMR\Common\ValueObjects\PhoneNumber;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\Modules\FaxSMS\Exception\FaxDocumentException;
 use OpenEMR\Modules\FaxSMS\Exception\FaxNotFoundException;
+use OpenEMR\Modules\FaxSMS\Service\OutboundFaxRecord;
 use OpenEMR\Modules\FaxSMS\Utils\SignalWireWebhookValidator;
 use OpenEMR\Services\PhoneNumberService;
 use Symfony\Component\Filesystem\Exception\IOException;
@@ -354,23 +355,25 @@ class FaxDocumentService
      * Idempotent by (account, job_id), matching the queue's unique key, so a
      * retry or a later sweep cannot duplicate the row.
      *
-     * @param object $faxDetails JobId, CallingNumber, CalledNumber, SentOn, PagesSent, Status.
      * @return int The queue row id, or 0 when the row already existed.
      */
-    public function insertOutboundFaxToQueue(object $faxDetails, string $account = '', int $uid = 0): int
-    {
-        $jobId = (string)($faxDetails->JobId ?? '');
-        if ($jobId === '') {
+    public function insertOutboundFaxToQueue(
+        OutboundFaxRecord $fax,
+        string $account = '',
+        int $uid = 0
+    ): int {
+        if ($fax->jobId === '') {
             return 0;
         }
-        if ($this->getFaxDocument($jobId) !== null) {
+        if ($this->getFaxDocument($fax->jobId) !== null) {
             return 0;
         }
 
-        $fromNumber = (string)($faxDetails->CallingNumber ?? '');
-        $toNumber = (string)($faxDetails->CalledNumber ?? '');
-        $status = (string)($faxDetails->Status ?? 'queued');
-        $sentOn = (string)($faxDetails->SentOn ?? gmdate('Y-m-d H:i:s'));
+        $jobId = $fax->jobId;
+        $fromNumber = $fax->from;
+        $toNumber = $fax->to;
+        $status = $fax->status;
+        $sentOn = $fax->sentOnOrNow();
 
         $faxData = [
             'JobId' => $jobId,
@@ -379,7 +382,7 @@ class FaxDocumentService
             'status' => $status,
             'direction' => 'outbound',
             'type' => 'application/pdf',
-            'pages' => (int)($faxDetails->PagesSent ?? 0),
+            'pages' => $fax->pages,
             'sentOn' => $sentOn,
         ];
 
@@ -407,7 +410,9 @@ class FaxDocumentService
             [$jobId, $this->siteId]
         );
 
-        return (int)($inserted['id'] ?? 0);
+        $insertedId = $inserted['id'] ?? null;
+
+        return is_numeric($insertedId) ? (int)$insertedId : 0;
     }
 
     /**
@@ -427,7 +432,8 @@ class FaxDocumentService
             return null;
         }
 
-        $documentId = (int)($fax['document_id'] ?? 0);
+        $documentIdRaw = $fax['document_id'] ?? null;
+        $documentId = is_numeric($documentIdRaw) ? (int)$documentIdRaw : 0;
         if ($documentId > 0) {
             $data = (new Document($documentId))->get_data();
 
@@ -457,7 +463,7 @@ class FaxDocumentService
             return null;
         }
 
-        return is_string($plain) && $plain !== '' ? $plain : null;
+        return $plain !== '' ? $plain : null;
     }
 
     /**
@@ -493,7 +499,7 @@ class FaxDocumentService
      * @param string      $dateFrom  'Y-m-d H:i:s' inclusive lower bound.
      * @param string      $dateTo    'Y-m-d H:i:s' inclusive upper bound.
      * @param string|null $direction 'inbound' / 'outbound', or null for both.
-     * @return list<array<string, mixed>>
+     * @return list<array<mixed, mixed>>
      */
     public function fetchQueueRange(
         string $dateFrom,
@@ -513,9 +519,7 @@ class FaxDocumentService
         }
         $sql .= " ORDER BY `date` DESC";
 
-        $rows = QueryUtils::fetchRecords($sql, $binds);
-
-        return array_values(array_filter($rows, static fn(mixed $row): bool => is_array($row)));
+        return QueryUtils::fetchRecords($sql, $binds);
     }
 
     /**
@@ -628,7 +632,8 @@ class FaxDocumentService
                 'type' => $docType,
                 // Page count travels in the details blob so a queue-backed
                 // inbox can show it without re-querying the vendor.
-                'pages' => (int)($faxDetails->PagesReceived ?? 0),
+                'pages' => is_numeric($faxDetails->PagesReceived ?? null)
+                    ? (int)$faxDetails->PagesReceived : 0,
                 'receivedOn' => $received
             ];
 

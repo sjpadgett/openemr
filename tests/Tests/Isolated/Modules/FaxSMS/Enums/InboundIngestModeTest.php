@@ -67,8 +67,12 @@ namespace OpenEMR\Tests\Isolated\Modules\FaxSMS\Enums {
     {
         public function testStoredValuesAreStable(): void
         {
-            self::assertSame('poll', InboundIngestMode::POLL->value);
-            self::assertSame('webhook', InboundIngestMode::WEBHOOK->value);
+            // These strings are persisted in module credentials, so the set and
+            // its order are the contract - not just that each case has a value.
+            self::assertSame(
+                ['poll', 'webhook'],
+                array_map(static fn(InboundIngestMode $m): string => $m->value, InboundIngestMode::cases())
+            );
         }
 
         /**

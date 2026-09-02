@@ -51,6 +51,7 @@ use OpenEMR\Modules\FaxSMS\RestClient\Sinch\Rest\FaxInstance;
 use OpenEMR\Modules\FaxSMS\Service\ExternalCredentialSource;
 use OpenEMR\Modules\FaxSMS\Service\FaxMailer;
 use OpenEMR\Modules\FaxSMS\Service\FaxUploadStaging;
+use OpenEMR\Modules\FaxSMS\Service\OutboundFaxRecord;
 use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxContentFetcherInterface;
 use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxPayload;
 use OpenEMR\Modules\FaxSMS\Webhook\InboundFaxReceiver;
@@ -183,7 +184,7 @@ class SinchFaxClient extends AppDispatch implements
      */
     public function authenticate($acl = ['patients', 'docs']): int|bool
     {
-        if (empty($this->credentials)) {
+        if ($this->credentials === null || $this->credentials === []) {
             $this->credentials = $this->getCredentials();
         }
 
@@ -212,21 +213,24 @@ class SinchFaxClient extends AppDispatch implements
             return xlt('Sinch client not initialized. Please configure credentials.');
         }
 
-        $isContent = $this->getRequest('isContent');
+        $isContentRaw = $this->getRequest('isContent');
+        $isContent = is_scalar($isContentRaw) && (string)$isContentRaw !== ''
+            && (string)$isContentRaw !== '0';
         $fileParam = $this->getRequest('file');
         $file = is_scalar($fileParam) ? (string)$fileParam : '';
         $docId = $this->getRequest('docid');
         $phoneParam = $this->getRequest('phone');
         $phone = is_scalar($phoneParam) ? $this->formatPhone((string)$phoneParam) : '';
         $isDocumentsParam = $this->getRequest('isDocuments');
-        $isDocuments = !empty($isDocumentsParam);
+        $isDocuments = is_scalar($isDocumentsParam) && (string)$isDocumentsParam !== ''
+            && (string)$isDocumentsParam !== '0';
         $email = $this->getRequest('email');
         $hasEmail = $this->validEmail($email);
         $smtpEnabled = OEGlobalsBag::getInstance()->getString('SMTP_HOST') !== '';
         $user = self::getLoggedInUser();
 
         // Resolve a plain server path for the file-mode send.
-        if (empty($isContent) && !$isDocuments && $file !== '') {
+        if (!$isContent && !$isDocuments && $file !== '') {
             if (str_starts_with($file, 'file://')) {
                 $file = substr($file, 7);
             }
@@ -251,7 +255,7 @@ class SinchFaxClient extends AppDispatch implements
         $stagedPath = null;
         $plainStagePath = null;
         $fileTypeHint = null;
-        if (empty($isContent) && !$isDocuments && $file !== '' && is_file($file)) {
+        if (!$isContent && !$isDocuments && $file !== '' && is_file($file)) {
             $plainStagePath = $this->uploadStaging->decryptStagedToTemp($file);
             if ($plainStagePath === null) {
                 return xlt('Error: Failed to read fax content');
@@ -282,7 +286,7 @@ class SinchFaxClient extends AppDispatch implements
         // document and inline-content branches, and a plaintext path otherwise.
         $error = false;
         $emailPath = null;
-        $payloadIsContent = $isDocuments || !empty($isContent);
+        $payloadIsContent = $isDocuments || $isContent;
         if ($hasEmail && $smtpEnabled) {
             try {
                 $emailPath = FaxMailer::mailUploadedDocument($email, '', $file, $user, $payloadIsContent);
@@ -530,15 +534,16 @@ class SinchFaxClient extends AppDispatch implements
             return;
         }
         try {
-            $record = new \stdClass();
-            $record->JobId = (string)$accepted->id;
-            $record->CallingNumber = $this->faxNumber;
-            $record->CalledNumber = $to;
-            $record->Status = strtolower((string)($accepted->status ?? 'queued'));
-            $record->PagesSent = (int)($accepted->numberOfPages ?? 0);
-            $record->SentOn = $accepted->createTime instanceof \DateTimeImmutable
-                ? $accepted->createTime->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s')
-                : gmdate('Y-m-d H:i:s');
+            $record = new OutboundFaxRecord(
+                jobId: (string)$accepted->id,
+                from: $this->faxNumber,
+                to: $to,
+                status: strtolower($accepted->status ?? 'queued'),
+                pages: $accepted->numberOfPages ?? 0,
+                sentOn: $accepted->createTime instanceof \DateTimeImmutable
+                    ? $accepted->createTime->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+                    : gmdate('Y-m-d H:i:s'),
+            );
 
             (new FaxDocumentService())->insertOutboundFaxToQueue($record, $this->queueAccount());
         } catch (\RuntimeException $e) {
@@ -707,7 +712,9 @@ class SinchFaxClient extends AppDispatch implements
                     // Already queued. Keep its status current so a fax that has
                     // since completed or failed stops showing as in-flight.
                     $status = strtolower((string)($fax->status ?? ''));
-                    if ($status !== '' && $status !== strtolower((string)($existing['status'] ?? ''))) {
+                    $existingStatus = $existing['status'] ?? null;
+                    $existingStatus = is_scalar($existingStatus) ? strtolower((string)$existingStatus) : '';
+                    if ($status !== '' && $status !== $existingStatus) {
                         $documents->updateFaxStatus($faxId, $status);
                     }
                     continue;
@@ -853,7 +860,8 @@ class SinchFaxClient extends AppDispatch implements
             );
             $count = 0;
             foreach ($rows as $row) {
-                if (empty($row['patient_id'])) {
+                $rowPatientId = $row['patient_id'] ?? null;
+                if (!is_numeric($rowPatientId) || (int)$rowPatientId === 0) {
                     $count++;
                 }
             }
@@ -1004,7 +1012,7 @@ class SinchFaxClient extends AppDispatch implements
 
         try {
             $result = (new FaxDocumentService())->assignFaxToPatient($faxId, $patientId);
-            if (empty($result['success'])) {
+            if (($result['success'] ?? false) !== true) {
                 return (string)json_encode(['error' => xlt('Failed to store fax document')]);
             }
 
@@ -1058,13 +1066,13 @@ class SinchFaxClient extends AppDispatch implements
             );
 
             foreach ($rows as $row) {
-                $faxId = (string)($row['job_id'] ?? '');
+                $faxId = $this->rowString($row, 'job_id');
                 if ($faxId === '') {
                     continue;
                 }
-                $isInbound = ($row['direction'] ?? 'inbound') !== 'outbound';
-                $status = (string)($row['status'] ?? 'unknown');
-                $details = json_decode((string)($row['details_json'] ?? '{}'), true);
+                $isInbound = $this->rowString($row, 'direction', 'inbound') !== 'outbound';
+                $status = $this->rowString($row, 'status', 'unknown');
+                $details = json_decode($this->rowString($row, 'details_json', '{}'), true);
                 $details = is_array($details) ? $details : [];
                 $pages = match (true) {
                     is_numeric($details['pages'] ?? null) => (int)$details['pages'],
@@ -1072,17 +1080,17 @@ class SinchFaxClient extends AppDispatch implements
                     default => 0,
                 };
 
-                $receivedUtc = (string)($row['receive_date'] ?? '');
+                $receivedUtc = $this->rowString($row, 'receive_date');
                 $dateLocal = $receivedUtc !== ''
                     ? $this->formatQueueDate($receivedUtc)
-                    : (string)($row['date'] ?? '');
+                    : $this->rowString($row, 'date');
                 $pagesCol = $pages > 0 ? (text((string)$pages) . ' ' . xlt('pages')) : '';
                 $isTerminal = in_array(strtoupper($status), self::TERMINAL_FAX_STATUSES, true)
                     || in_array($status, ['received', 'delivered', 'completed'], true);
 
                 $cells = '<tr><td>' . text($dateLocal) . '</td><td>'
-                    . text((string)($row['calling_number'] ?? '')) . '</td><td>'
-                    . text((string)($row['called_number'] ?? '')) . '</td><td>' . $pagesCol . '</td><td>';
+                    . text($this->rowString($row, 'calling_number')) . '</td><td>'
+                    . text($this->rowString($row, 'called_number')) . '</td><td>' . $pagesCol . '</td><td>';
 
                 if (!$isInbound) {
                     $actions = $isTerminal
@@ -1123,6 +1131,22 @@ class SinchFaxClient extends AppDispatch implements
 
         echo json_encode($responseMsg);
         exit();
+    }
+
+    /**
+     * Read one queue column as a string.
+     *
+     * Queue rows come back from the query layer untyped, and the inbox does
+     * nothing with them but render text, so narrowing once here keeps the
+     * renderer free of per-column casts.
+     *
+     * @param array<mixed, mixed> $row
+     */
+    private function rowString(array $row, string $key, string $default = ''): string
+    {
+        $value = $row[$key] ?? null;
+
+        return is_scalar($value) ? (string)$value : $default;
     }
 
     /**
