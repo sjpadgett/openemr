@@ -140,6 +140,8 @@ abstract class AppDispatch
         'assignFax' => ['csrf' => true],
         'disposeDocument' => ['csrf' => true],
         'faxProcessUploads' => ['csrf' => true],
+        // Reaches the vendor using stored credentials; setup posts the token.
+        'discoverFaxNumbers' => ['csrf' => true],
         'install' => ['csrf' => true],
     ];
 

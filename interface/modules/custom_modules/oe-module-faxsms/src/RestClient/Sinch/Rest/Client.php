@@ -128,6 +128,29 @@ final readonly class Transport
     }
 
     /**
+     * Issue a request against another project-scoped resource (services and
+     * their numbers), decoding the JSON body.
+     *
+     * @param array<string, mixed> $opts
+     * @return array<mixed, mixed>
+     * @throws RestException
+     */
+    public function requestProject(string $method, string $path, array $opts = []): array
+    {
+        $url = $this->hostname . '/v3/projects/' . rawurlencode($this->projectId) . $path;
+        $response = $this->send($method, $url, $opts, 'application/json');
+        $decoded = json_decode($response['body'], true);
+        if (!is_array($decoded)) {
+            throw new RestException(
+                'Sinch returned a non-JSON body (HTTP ' . $response['status'] . ')',
+                $response['status']
+            );
+        }
+
+        return $decoded;
+    }
+
+    /**
      * Issue a request whose body is opaque bytes (the fax PDF).
      *
      * @return array{status: int, body: string, contentType: string}
@@ -548,15 +571,159 @@ final readonly class FaxList
 }
 
 /**
- * Version wrapper: exposes ->faxes (mirrors the ->fax->v3->faxes path).
+ * A fax service: the container a Sinch project uses to group numbers, webhook
+ * configuration and document-retention settings.
+ *
+ * The retention flags matter beyond configuration display: they are the
+ * provider's own statement of whether documents will exist to download later,
+ * which is otherwise a setting an administrator has to keep in sync by hand.
+ */
+final class ServiceInstance
+{
+    public ?string $id = null;
+    public ?string $name = null;
+    public ?string $defaultFrom = null;
+    public ?bool $defaultForProject = null;
+    public ?string $incomingWebhookUrl = null;
+    public ?bool $saveInboundFaxDocuments = null;
+    public ?bool $saveOutboundFaxDocuments = null;
+
+    /**
+     * @param array<mixed, mixed> $raw
+     */
+    public static function fromArray(array $raw): self
+    {
+        $service = new self();
+        $service->id = self::str($raw['id'] ?? null);
+        $service->name = self::str($raw['name'] ?? null);
+        $service->defaultFrom = self::str($raw['defaultFrom'] ?? null);
+        $service->defaultForProject = self::boolOrNull($raw['defaultForProject'] ?? null);
+        $service->incomingWebhookUrl = self::str($raw['incomingWebhookUrl'] ?? null);
+        $service->saveInboundFaxDocuments = self::boolOrNull($raw['saveInboundFaxDocuments'] ?? null);
+        $service->saveOutboundFaxDocuments = self::boolOrNull($raw['saveOutboundFaxDocuments'] ?? null);
+
+        return $service;
+    }
+
+    /**
+     * Whether this service keeps documents for received faxes. Null when the
+     * provider did not report it, which callers must treat as "unknown" rather
+     * than as "off" - guessing "off" here would disable document fetching on a
+     * service that actually retains them.
+     */
+    public function retainsInboundDocuments(): ?bool
+    {
+        return $this->saveInboundFaxDocuments;
+    }
+
+    private static function str(mixed $value): ?string
+    {
+        return is_scalar($value) ? (string)$value : null;
+    }
+
+    private static function boolOrNull(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_string($value)) {
+            return in_array(strtolower($value), ['true', '1'], true);
+        }
+
+        return null;
+    }
+}
+
+/**
+ * Context for one fax service; currently just its phone numbers.
+ */
+final readonly class ServiceContext
+{
+    public function __construct(private Transport $transport, private string $serviceId)
+    {
+    }
+
+    /**
+     * GET .../services/{id}/numbers
+     *
+     * @return list<string> Phone numbers in E.164 form.
+     * @throws RestException
+     */
+    public function numbers(int $pageSize = 100): array
+    {
+        $data = $this->transport->requestProject(
+            'GET',
+            '/services/' . rawurlencode($this->serviceId) . '/numbers',
+            ['query' => ['pageSize' => $pageSize]]
+        );
+
+        $rows = $data['numbers'] ?? [];
+        $numbers = [];
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                // Entries are objects carrying phoneNumber, but tolerate a bare
+                // string in case the API ever simplifies the shape.
+                $value = is_array($row) ? ($row['phoneNumber'] ?? $row['number'] ?? null) : $row;
+                if (is_string($value) && $value !== '') {
+                    $numbers[] = $value;
+                }
+            }
+        }
+
+        return $numbers;
+    }
+}
+
+/**
+ * The Services collection.
+ */
+final readonly class ServiceList
+{
+    public function __construct(private Transport $transport)
+    {
+    }
+
+    /**
+     * GET .../services
+     *
+     * @return list<ServiceInstance>
+     * @throws RestException
+     */
+    public function read(int $pageSize = 100): array
+    {
+        $data = $this->transport->requestProject('GET', '/services', ['query' => ['pageSize' => $pageSize]]);
+
+        $rows = $data['services'] ?? [];
+        $services = [];
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                if (is_array($row)) {
+                    $services[] = ServiceInstance::fromArray($row);
+                }
+            }
+        }
+
+        return $services;
+    }
+
+    public function getContext(string $serviceId): ServiceContext
+    {
+        return new ServiceContext($this->transport, $serviceId);
+    }
+}
+
+/**
+ * Version wrapper: exposes ->faxes and ->services under ->fax->v3->.
  */
 final class V3Domain
 {
     public FaxList $faxes;
+    public ServiceList $services;
 
     public function __construct(Transport $transport)
     {
         $this->faxes = new FaxList($transport);
+        $this->services = new ServiceList($transport);
     }
 }
 

@@ -450,6 +450,99 @@ final class SinchRestClientTest extends TestCase
         new Client(self::PROJECT, self::KEY_ID, self::SECRET, ['httpClient' => new \stdClass()]);
     }
 
+    public function testServiceDiscoveryListsServicesAndTheirRetentionFlags(): void
+    {
+        $history = [];
+        $client = $this->makeClient(
+            [
+                new Response(200, [], (string) json_encode([
+                    'services' => [
+                        [
+                            'id' => 'svc_main',
+                            'name' => 'Main Clinic',
+                            'defaultFrom' => '+15557654321',
+                            'defaultForProject' => true,
+                            'saveInboundFaxDocuments' => true,
+                            'saveOutboundFaxDocuments' => true,
+                        ],
+                        [
+                            'id' => 'svc_privacy',
+                            'name' => 'Records',
+                            // The API has been seen to render these as strings.
+                            'saveInboundFaxDocuments' => 'false',
+                        ],
+                    ],
+                ])),
+            ],
+            $history
+        );
+
+        $services = $client->fax->v3->services->read();
+
+        self::assertCount(2, $services);
+        self::assertSame('svc_main', $services[0]->id);
+        self::assertSame('Main Clinic', $services[0]->name);
+        self::assertSame('+15557654321', $services[0]->defaultFrom);
+        self::assertTrue($services[0]->defaultForProject);
+        self::assertTrue($services[0]->retainsInboundDocuments());
+        self::assertFalse($services[1]->retainsInboundDocuments(), '"false" must normalize to a real boolean.');
+
+        $request = $this->lastRequest($history);
+        self::assertSame('GET', $request->getMethod());
+        self::assertSame('/v3/projects/' . self::PROJECT . '/services', $request->getUri()->getPath());
+        self::assertSame($this->expectedBasicAuthHeader(), $request->getHeaderLine('Authorization'));
+    }
+
+    /**
+     * An absent flag is "unknown", never "off" — guessing off would disable
+     * document fetching on a service that actually retains them.
+     */
+    public function testUnreportedRetentionFlagIsNullNotFalse(): void
+    {
+        $history = [];
+        $client = $this->makeClient(
+            [new Response(200, [], (string) json_encode(['services' => [['id' => 'svc_quiet']]]))],
+            $history
+        );
+
+        self::assertNull($client->fax->v3->services->read()[0]->retainsInboundDocuments());
+    }
+
+    public function testServiceNumbersAreExtractedFromTheirObjects(): void
+    {
+        $history = [];
+        $client = $this->makeClient(
+            [
+                new Response(200, [], (string) json_encode([
+                    'numbers' => [
+                        ['phoneNumber' => '+15557654321', 'permissions' => 'both'],
+                        ['phoneNumber' => '+15557650000', 'permissions' => 'receive'],
+                        // Tolerated shapes: a bare string, and an unusable entry.
+                        '+15557651111',
+                        ['permissions' => 'send'],
+                    ],
+                ])),
+            ],
+            $history
+        );
+
+        $numbers = $client->fax->v3->services->getContext('svc_main')->numbers();
+
+        self::assertSame(['+15557654321', '+15557650000', '+15557651111'], $numbers);
+        self::assertSame(
+            '/v3/projects/' . self::PROJECT . '/services/svc_main/numbers',
+            $this->lastRequest($history)->getUri()->getPath()
+        );
+    }
+
+    public function testEmptyServiceListIsNotAnError(): void
+    {
+        $history = [];
+        $client = $this->makeClient([new Response(200, [], (string) json_encode(['services' => []]))], $history);
+
+        self::assertSame([], $client->fax->v3->services->read());
+    }
+
     /**
      * Build a Client whose transport is a MockHandler-backed Guzzle client,
      * recording outgoing requests into $history.

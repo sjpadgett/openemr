@@ -129,6 +129,61 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
             };
             $('#form_sinch_inbound_mode, #form_sinch_vendor_storage').on('change', syncInboundMode);
             syncInboundMode();
+
+            // Ask Sinch which fax services and numbers this project actually has,
+            // so the number is chosen rather than typed. The same response
+            // reports whether each service keeps documents, which is the setting
+            // most likely to drift out of sync with the Sinch dashboard.
+            $('#sinch-lookup').on('click', function () {
+                const $status = $('#sinch-lookup-status');
+                const $button = $(this);
+                $button.prop('disabled', true);
+                $status.removeClass('text-danger').text(<?php echo xlj('Asking Sinch...'); ?>);
+
+                $.ajax({
+                    type: 'POST',
+                    url: 'discoverFaxNumbers?type=fax',
+                    dataType: 'json',
+                    data: {csrf_token_form: <?php echo js_escape(CsrfUtils::collectCsrfToken($session, 'contact-form')); ?>}
+                }).done(function (data) {
+                    if (!data || data.error) {
+                        $status.addClass('text-danger')
+                            .text(data && data.error ? data.error : <?php echo xlj('Lookup failed.'); ?>);
+                        return;
+                    }
+
+                    const $numbers = $('#sinch-number-list').empty();
+                    const $services = $('#sinch-service-list').empty();
+                    let numberCount = 0;
+                    let retains = null;
+
+                    (data.services || []).forEach(function (service) {
+                        $services.append($('<option>').attr('value', service.id).text(service.name));
+                        (service.numbers || []).forEach(function (number) {
+                            $numbers.append($('<option>').attr('value', number));
+                            numberCount++;
+                        });
+                        // Only adopt a retention answer the project agrees on;
+                        // a mixed project keeps whatever the admin chose.
+                        if (typeof service.retainsInbound === 'boolean') {
+                            retains = (retains === null || retains === service.retainsInbound)
+                                ? service.retainsInbound : 'mixed';
+                        }
+                    });
+
+                    if (typeof retains === 'boolean') {
+                        $('#form_sinch_vendor_storage').val(retains ? 'retained' : 'none').trigger('change');
+                    }
+
+                    $status.text(numberCount
+                        ? numberCount + ' ' + <?php echo xlj('numbers available - click the field to choose one.'); ?>
+                        : <?php echo xlj('No numbers are assigned to this project yet.'); ?>);
+                }).fail(function () {
+                    $status.addClass('text-danger').text(<?php echo xlj('Lookup failed.'); ?>);
+                }).always(function () {
+                    $button.prop('disabled', false);
+                });
+            });
         });
     </script>
 </head>
@@ -346,15 +401,24 @@ $sinchManaged = static fn(string $key): bool => in_array($key, $sinchManagedKeys
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_fax_number"><?php echo xlt("Fax Number") ?> *</label>
-                                <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control"<?php echo $sinchManaged('sinch_fax_number') ? ' readonly' : '' ?>
-                                    placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
-                                    required="required" value='<?php echo attr($c['sinch_fax_number'] ?? '') ?>' />
-                                <small class="form-text text-muted"><?php echo xlt("Your Sinch fax number in E.164 format") ?></small>
+                                <div class="input-group">
+                                    <input id="form_sinch_fax_number" type="text" name="sinch_fax_number" class="form-control" list="sinch-number-list"<?php echo $sinchManaged('sinch_fax_number') ? ' readonly' : '' ?>
+                                        placeholder="<?php echo attr($clientApp->defaultPhoneExample()) ?>"
+                                        required="required" value='<?php echo attr($c['sinch_fax_number'] ?? '') ?>' />
+                                    <div class="input-group-append">
+                                        <button id="sinch-lookup" type="button" class="btn btn-outline-secondary">
+                                            <?php echo xlt("Look up") ?>
+                                        </button>
+                                    </div>
+                                </div>
+                                <datalist id="sinch-number-list"></datalist>
+                                <small id="sinch-lookup-status" class="form-text text-muted"><?php echo xlt("Your Sinch fax number in E.164 format. Save your credentials, then Look up to list the numbers on this project.") ?></small>
                             </div>
                             <div class="form-group">
                                 <label for="form_sinch_service_id"><?php echo xlt("Service ID") ?></label>
-                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control"<?php echo $sinchManaged('sinch_service_id') ? ' readonly' : '' ?>
+                                <input id="form_sinch_service_id" type="text" name="sinch_service_id" class="form-control" list="sinch-service-list"<?php echo $sinchManaged('sinch_service_id') ? ' readonly' : '' ?>
                                     value='<?php echo attr($c['sinch_service_id'] ?? '') ?>' />
+                                <datalist id="sinch-service-list"></datalist>
                                 <small class="form-text text-muted"><?php echo xlt("Optional. Leave blank to use the project's default fax service.") ?></small>
                             </div>
                             <?php if ($sinchManagedKeys !== []) { ?>

@@ -407,6 +407,76 @@ class SinchFaxClient extends AppDispatch implements
     }
 
     /**
+     * Look up this project's fax services and their numbers, for the setup screen.
+     *
+     * Turning the fax-number field into a picker removes a class of support
+     * ticket that a free-text field guarantees: a number typed in the wrong
+     * format, or one that belongs to a different project, fails at send time
+     * with a provider error rather than at configuration time.
+     *
+     * Each service also reports whether it retains documents, so the retention
+     * posture can be read from the provider instead of asked of the
+     * administrator and then silently drifting out of sync with the Sinch
+     * dashboard.
+     *
+     * @return string JSON: {services: [{id, name, numbers, retainsInbound, isDefault}]}
+     */
+    public function discoverFaxNumbers(): string
+    {
+        if (!$this->authenticate()) {
+            return (string)json_encode(['error' => xlt('Not authorized')]);
+        }
+        if ($this->client === null) {
+            return (string)json_encode(['error' => xlt('Enter and save your Sinch credentials first.')]);
+        }
+
+        try {
+            $services = $this->client->fax->v3->services->read();
+        } catch (\RuntimeException $e) {
+            ServiceContainer::getLogger()->warning('Sinch service discovery failed', ['exception' => $e]);
+
+            return (string)json_encode(['error' => xlt('Could not reach Sinch with these credentials.')]);
+        }
+
+        $payload = [];
+        foreach ($services as $service) {
+            $serviceId = (string)($service->id ?? '');
+            if ($serviceId === '') {
+                continue;
+            }
+
+            $numbers = [];
+            try {
+                $numbers = $this->client->fax->v3->services->getContext($serviceId)->numbers();
+            } catch (\RuntimeException $e) {
+                // A service whose numbers cannot be listed is still worth
+                // offering: the administrator can type the number by hand.
+                ServiceContainer::getLogger()->info('Sinch numbers unavailable for a service', [
+                    'exception' => $e,
+                    'serviceId' => $serviceId,
+                ]);
+            }
+
+            $payload[] = [
+                'id' => $serviceId,
+                'name' => (string)($service->name ?? $serviceId),
+                'numbers' => $numbers,
+                'defaultFrom' => (string)($service->defaultFrom ?? ''),
+                'isDefault' => $service->defaultForProject === true,
+                // Null means the provider did not say; the UI leaves the
+                // retention setting alone rather than guessing.
+                'retainsInbound' => $service->retainsInboundDocuments(),
+            ];
+        }
+
+        if ($payload === []) {
+            return (string)json_encode(['error' => xlt('No fax services found on this Sinch project.')]);
+        }
+
+        return (string)json_encode(['services' => $payload]);
+    }
+
+    /**
      * Status recorded for an inbound fax whose document we do not have.
      *
      * With vendor storage off this is terminal and actionable: the callback was

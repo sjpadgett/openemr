@@ -44,6 +44,19 @@ that queue either way, so switching modes never strands faxes taken in under the
 other one. Webhook mode also re-runs the polling sweep periodically, so a missed
 or misconfigured webhook degrades to polling rather than losing faxes.
 
+#### Finding your fax number
+
+Save your Project ID, key ID and key secret, then press **Look up** beside the
+fax number. The module asks Sinch which fax services exist on the project and
+which numbers are assigned to each, turning both the number and service fields
+into pickers instead of free text — a mistyped number otherwise fails at send
+time rather than at configuration time.
+
+The same lookup reads each service's *Save Fax Documents* setting and sets the
+retention option below to match, so that setting cannot drift out of sync with
+the Sinch dashboard. When a project's services disagree, the retention option is
+left as you set it.
+
 #### Document retention at Sinch
 
 The **Document retention** setting must match the *Save Fax Documents* checkboxes
