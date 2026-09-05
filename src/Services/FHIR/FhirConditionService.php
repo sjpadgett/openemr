@@ -200,20 +200,19 @@ class FhirConditionService extends FhirServiceBase implements IResourceUSCIGProf
             $data['verification'] = $json['verificationStatus']['coding'][0]['code'];
         }
 
-        // OnsetDateTime -> begdate (ConditionValidator expects Y-m-d)
-        if (!empty($json['onsetDateTime'])) {
-            $begdate = $this->parseFullDateTimeToDate($json['onsetDateTime']);
-            if ($begdate !== null) {
-                $data['begdate'] = $begdate;
-            }
+        // onsetDateTime -> begdate (ConditionValidator expects Y-m-d).
+        // Partial precision (YYYY, YYYY-MM) is rejected rather than widened:
+        // lists.begdate is a DATE column and a year-only onset cannot be stored
+        // faithfully, so the caller gets a 400 instead of a fabricated day.
+        $begdate = FhirDateTimeParser::toDbDate($json['onsetDateTime'] ?? null, 'Condition.onsetDateTime');
+        if ($begdate !== null) {
+            $data['begdate'] = $begdate;
         }
 
-        // AbatementDateTime -> enddate
-        if (!empty($json['abatementDateTime'])) {
-            $enddate = $this->parseFullDateTimeToDate($json['abatementDateTime']);
-            if ($enddate !== null) {
-                $data['enddate'] = $enddate;
-            }
+        // abatementDateTime -> enddate
+        $enddate = FhirDateTimeParser::toDbDate($json['abatementDateTime'] ?? null, 'Condition.abatementDateTime');
+        if ($enddate !== null) {
+            $data['enddate'] = $enddate;
         }
 
         // Note -> comments
@@ -222,30 +221,6 @@ class FhirConditionService extends FhirServiceBase implements IResourceUSCIGProf
         }
 
         return $data;
-    }
-
-    /**
-     * Parses a FHIR dateTime that is a full date (YYYY-MM-DD) or full
-     * date-time (YYYY-MM-DDThh:mm:ss±zz:zz) into an OpenEMR Y-m-d string.
-     *
-     * FHIR R4 dateTime also permits partial values (YYYY, YYYY-MM); those are
-     * intentionally rejected here (returns null) rather than silently
-     * truncated, because a year-only onset cannot be represented faithfully as
-     * a calendar date. Full partial-precision handling is tracked separately.
-     *
-     * @see https://build.fhir.org/datatypes.html#dateTime
-     */
-    private function parseFullDateTimeToDate(mixed $value): ?string
-    {
-        if (!is_string($value)) {
-            return null;
-        }
-        // Require at least a full date; reject YYYY and YYYY-MM partials.
-        if (preg_match('/^\d{4}-\d{2}-\d{2}([T ].*)?$/', $value) !== 1) {
-            return null;
-        }
-        $dt = date_create_immutable($value);
-        return $dt === false ? null : $dt->format('Y-m-d');
     }
 
     /**

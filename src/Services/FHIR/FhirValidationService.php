@@ -29,9 +29,14 @@ class FhirValidationService
      * null when the resource is valid. Callers treat a non-null result as a
      * 400-worthy validation error.
      *
-     * @param array<string, mixed> $data
+     * Keys are typed as array-key rather than string: the FHIR read-path
+     * controllers (Organization, Practitioner) hand this method plain decoded
+     * arrays, and narrowing to array<string, mixed> made every one of those
+     * call sites a PHPStan error without making this method any safer.
+     *
+     * @param array<array-key, mixed> $data
      */
-    public function validate($data): ?FHIROperationOutcome
+    public function validate(array $data): ?FHIROperationOutcome
     {
         if (!array_key_exists('resourceType', $data)) {
             return $this->operationOutcomeResourceService('error', 'invalid', 'resourceType Not Found');

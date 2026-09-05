@@ -11,8 +11,8 @@
 
 namespace OpenEMR\RestControllers\FHIR;
 
+use OpenEMR\BC\ServiceContainer;
 use OpenEMR\Common\Http\HttpRestRequest;
-use OpenEMR\Common\Logging\SystemLogger;
 use OpenEMR\Core\OEGlobalsBag;
 use OpenEMR\FHIR\R4\FHIRResource\FHIRBundle\FHIRBundleEntry;
 use OpenEMR\FHIR\R4\FHIRResource\FHIRDomainResource;
@@ -34,6 +34,12 @@ class FhirGenericRestController implements IGlobalsAware {
     use GlobalInterfaceTrait;
     private FhirResourcesService $fhirResourcesService;
 
+    /**
+     * ACL checks applied before read and write operations. Shaped so callers of
+     * $aclCheck['section'] etc. are typed rather than reading offsets on mixed.
+     *
+     * @var list<array{section: string, subSection: string, aclPermission: string}>
+     */
     private array $aclChecks = [];
 
     /**
@@ -49,13 +55,16 @@ class FhirGenericRestController implements IGlobalsAware {
     public function __construct(protected HttpRestRequest $request, protected FhirServiceBase $fhirService, OEGlobalsBag $globalsBag)
     {
         $this->setGlobalsBag($globalsBag);
-        if ($request->getSession()) {
+        if ($request->hasSession()) {
             $this->fhirService->setSession($request->getSession());
         }
     }
 
     public function getResourcePolicyEnforcementDecisionChecker(): ResourceConstraintFilterer {
-        $this->resourcePolicyEnforcementDecisionChecker ??= new ResourceConstraintFilterer();
+        // TODO: eventually we could inject the ACLs here and do more advanced checking on a per-resource basis
+        if (!isset($this->resourcePolicyEnforcementDecisionChecker)) {
+            $this->resourcePolicyEnforcementDecisionChecker = new ResourceConstraintFilterer();
+        }
         return $this->resourcePolicyEnforcementDecisionChecker;
     }
 
@@ -76,7 +85,9 @@ class FhirGenericRestController implements IGlobalsAware {
 
     protected function getFhirResourcesService(): FhirResourcesService
     {
-        $this->fhirResourcesService ??= new FhirResourcesService();
+        if (!isset($this->fhirResourcesService)) {
+            $this->fhirResourcesService = new FhirResourcesService();
+        }
         return $this->fhirResourcesService;
     }
 
@@ -136,12 +147,12 @@ class FhirGenericRestController implements IGlobalsAware {
 
     /**
      * Queries for FHIR condition resources using various search parameters.
-     * @param array $searchParams
+     * @param array<string, mixed>|null $searchParams
      * @return JsonResponse|Response FHIR bundle with query results, if found
      */
     public function getAll(?array $searchParams = null): JsonResponse|Response
     {
-        if (empty( $searchParams)) {
+        if ($searchParams === null || $searchParams === []) {
             $searchParams = $this->request->query->all();
         }
         $redirectUrl = $this->getHttpRestRequest()->getServerParams()['REDIRECT_URL'] ?? '';
@@ -170,7 +181,7 @@ class FhirGenericRestController implements IGlobalsAware {
 
     /**
      * Creates a new FHIR resource
-     * @param array $fhirJson The FHIR resource as a JSON-decoded array
+     * @param array<string, mixed> $fhirJson The FHIR resource as a JSON-decoded array
      * @return Response 201 if the resource is created, 400 if invalid
      */
     public function post(array $fhirJson): Response
@@ -221,7 +232,7 @@ class FhirGenericRestController implements IGlobalsAware {
     /**
      * Updates an existing FHIR resource
      * @param string $fhirId The FHIR resource id (uuid)
-     * @param array $fhirJson The updated FHIR resource (complete resource)
+     * @param array<string, mixed> $fhirJson The updated FHIR resource (complete resource)
      * @return Response 200 if the resource is updated, 400 if invalid
      */
     public function put(string $fhirId, array $fhirJson): Response
@@ -244,7 +255,9 @@ class FhirGenericRestController implements IGlobalsAware {
         // could PUT /fhir/X/A with body {"id":"B"} and (depending on which key
         // the downstream service treats as operative) mutate B instead.
         $bodyId = $fhirJson['id'] ?? null;
-        if ($bodyId !== null && (string) $bodyId !== $fhirId) {
+        // A non-string id is rejected outright: FHIR `id` is a string primitive,
+        // and casting whatever arrived would mask a malformed payload.
+        if ($bodyId !== null && (!is_string($bodyId) || $bodyId !== $fhirId)) {
             return RestControllerHelper::responseHandler(
                 UtilsService::createOperationOutcomeResource(
                     'error',
@@ -306,7 +319,7 @@ class FhirGenericRestController implements IGlobalsAware {
         string $operation
     ): Response {
         $correlationId = bin2hex(random_bytes(6));
-        (new SystemLogger())->error(
+        ServiceContainer::getLogger()->error(
             'FHIR write operation failed',
             [
                 'operation' => $operation,
@@ -346,7 +359,7 @@ class FhirGenericRestController implements IGlobalsAware {
     private function enforcePatientCompartment(array $fhirJson): ?Response
     {
         $boundPatientUuid = $this->getHttpRestRequest()->getPatientUUIDString();
-        if (empty($boundPatientUuid)) {
+        if ($boundPatientUuid === null || $boundPatientUuid === '') {
             return null;
         }
         if (!($this->getFhirService() instanceof \OpenEMR\Services\FHIR\IPatientCompartmentResourceService)) {
@@ -383,7 +396,11 @@ class FhirGenericRestController implements IGlobalsAware {
     private static function extractPatientUuidFromFhirJson(array $fhirJson): ?string
     {
         foreach (['subject', 'patient', 'beneficiary'] as $field) {
-            $reference = $fhirJson[$field]['reference'] ?? null;
+            $element = $fhirJson[$field] ?? null;
+            if (!is_array($element)) {
+                continue;
+            }
+            $reference = $element['reference'] ?? null;
             if (!is_string($reference) || $reference === '') {
                 continue;
             }
@@ -401,7 +418,7 @@ class FhirGenericRestController implements IGlobalsAware {
      * static map (not from user input), so untrusted JSON cannot trigger
      * autoload of an arbitrary class.
      *
-     * @param array $fhirJson The FHIR resource as a JSON-decoded array
+     * @param array<string, mixed> $fhirJson The FHIR resource as a JSON-decoded array
      * @return FHIRDomainResource|Response The deserialized resource, or a 400 Response on error
      */
     private function deserializeFhirResource(array $fhirJson): FHIRDomainResource|Response
@@ -452,6 +469,16 @@ class FhirGenericRestController implements IGlobalsAware {
         }
 
         unset($fhirJson['resourceType']);
-        return new $className($fhirJson);
+        $resource = new $className($fhirJson);
+        if (!($resource instanceof FHIRDomainResource)) {
+            // Unreachable for the mapped types, but keeps the return type honest
+            // instead of handing an unconstrained object to the service layer.
+            return RestControllerHelper::responseHandler(
+                UtilsService::createOperationOutcomeResource('error', 'exception', 'Unsupported resource type'),
+                null,
+                500
+            );
+        }
+        return $resource;
     }
 }

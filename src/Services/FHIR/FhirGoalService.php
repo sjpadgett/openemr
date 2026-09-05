@@ -453,17 +453,23 @@ class FhirGoalService extends FhirServiceBase implements IResourceUSCIGProfileSe
             }
         }
 
-        // startDate -> date
-        if (!empty($json['startDate']) && is_string($json['startDate'])) {
-            $dt = date_create_immutable($json['startDate']);
-            if ($dt !== false) {
-                $item['date'] = $dt->format('Y-m-d');
-            }
+        // startDate -> date. Goal.startDate is a FHIR `date`, where partial
+        // precision is both legal and common ("started in 2024"), so widening to
+        // the first day of the period is allowed here rather than rejected. The
+        // widening is lossy and deliberate; see FhirDateTimeParser.
+        $startDate = FhirDateTimeParser::toDbDate($json['startDate'] ?? null, 'Goal.startDate', true);
+        if ($startDate !== null) {
+            $item['date'] = $startDate;
         }
 
-        // target[0].dueDate -> proposed_date
-        $dueDate = $json['target'][0]['dueDate'] ?? null;
-        if (is_string($dueDate) && $dueDate !== '') {
+        // target[0].dueDate -> proposed_date. Previously stored verbatim, which
+        // let any client-supplied string reach the column.
+        $dueDate = FhirDateTimeParser::toDbDate(
+            $json['target'][0]['dueDate'] ?? null,
+            'Goal.target[0].dueDate',
+            true
+        );
+        if ($dueDate !== null) {
             $item['proposed_date'] = $dueDate;
         }
 

@@ -124,6 +124,73 @@ class RestControllerHelper
     private const MAX_REQUEST_BODY_SIZE = 2097152;
 
     /**
+     * FHIR write interactions that are *registered* as routes purely so the API
+     * can answer with a conformant 405 + OperationOutcome explaining why the
+     * write is unsupported, rather than a bare 404.
+     *
+     * These must never be advertised in the CapabilityStatement: the statement
+     * is derived from the route map (see addRequestMethods()), so a registered
+     * "POST /fhir/Provenance" would otherwise publish a `create` interaction for
+     * a resource that can only ever return 405 -- a conformance claim Inferno
+     * and any spec-following client will act on.
+     *
+     * Populated by fhirWriteNotImplemented() at route-map build time, so the
+     * route file stays the single source of truth.
+     *
+     * @var array<string, array<string, string>> resourceType => [HTTP method => reason]
+     */
+    private static array $unimplementedFhirWrites = [];
+
+    /**
+     * Builds the route handler for a FHIR write that OpenEMR deliberately does
+     * not implement, and records the interaction so the CapabilityStatement
+     * omits it.
+     *
+     * Usage in the FHIR route map:
+     *
+     *   "POST /fhir/Provenance" => RestControllerHelper::fhirWriteNotImplemented(
+     *       'POST',
+     *       'Provenance',
+     *       'FHIR Provenance is synthesized at read time and cannot be written directly.'
+     *   ),
+     *
+     * @param string $method       HTTP method the route is registered under (POST/PUT/PATCH/DELETE).
+     * @param string $resourceType FHIR resource type as it appears in the route path.
+     * @param string $reason       Client-facing explanation placed in OperationOutcome.diagnostics.
+     */
+    public static function fhirWriteNotImplemented(string $method, string $resourceType, string $reason): \Closure
+    {
+        self::$unimplementedFhirWrites[$resourceType][strtoupper(trim($method))] = $reason;
+
+        // Variadic so one factory serves both collection routes (request only)
+        // and instance routes (uuid, request).
+        return static fn(mixed ...$routeArgs): JsonResponse|Response => self::responseHandler(
+            UtilsService::createOperationOutcomeResource('error', 'not-supported', $reason),
+            null,
+            Response::HTTP_METHOD_NOT_ALLOWED
+        );
+    }
+
+    /**
+     * The FHIR write interactions registered as explicit 405 responses.
+     *
+     * @return array<string, array<string, string>> resourceType => [HTTP method => reason]
+     */
+    public static function getUnimplementedFhirWrites(): array
+    {
+        return self::$unimplementedFhirWrites;
+    }
+
+    /**
+     * True when the given FHIR resource type + HTTP method pair is registered
+     * only to return 405, and so must be left out of the CapabilityStatement.
+     */
+    public static function isUnimplementedFhirWrite(string $resourceType, string $method): bool
+    {
+        return isset(self::$unimplementedFhirWrites[$resourceType][strtoupper(trim($method))]);
+    }
+
+    /**
      * Parses the JSON request body with proper error handling.
      *
      * Returns an array on success, or a Response (400/413) if the body is empty,
@@ -133,6 +200,9 @@ class RestControllerHelper
      * @param bool $isFhir If true, returns a FHIR OperationOutcome on error
      * @param int $maxBytes Maximum allowed body size in bytes
      * @return array<mixed, mixed>|Response The parsed JSON array or an error response
+     */
+    /**
+     * @return array<string, mixed>|Response The decoded JSON object, or an error Response
      */
     public static function parseJsonRequestBody(bool $isFhir = false, int $maxBytes = self::MAX_REQUEST_BODY_SIZE): array|Response
     {
@@ -151,7 +221,7 @@ class RestControllerHelper
         }
 
         // Read with length limit to prevent memory exhaustion
-        $readLength = $maxBytes + 1;
+        $readLength = max(0, $maxBytes + 1);
         $rawBody = file_get_contents("php://input", false, null, 0, $readLength);
 
         if ($rawBody === false || $rawBody === '') {
@@ -205,7 +275,14 @@ class RestControllerHelper
             return new Response((string) json_encode(['error' => $message]), 400, ['Content-Type' => 'application/json']);
         }
 
-        return $decoded;
+        // Re-key so the declared array<string, mixed> return is provable rather
+        // than asserted: json_decode() yields int keys for a JSON array, and
+        // callers index by field name.
+        $body = [];
+        foreach ($decoded as $key => $value) {
+            $body[(string) $key] = $value;
+        }
+        return $body;
     }
 
     public static function addFhirLocationHeader(ResponseInterface $response, string $resourceType, int|string $id): ResponseInterface
@@ -262,7 +339,7 @@ class RestControllerHelper
     public static function validationHandler($validationResult)
     {
         if (property_exists($validationResult, 'isValid') && !$validationResult->isValid()) {
-            header('HTTP/1.1 400 Bad Request', true, 400);
+            http_response_code(400);
             $validationMessages = null;
             if (property_exists($validationResult, 'getValidationMessages')) {
                 $validationMessages = $validationResult->getValidationMessages();
@@ -292,11 +369,8 @@ class RestControllerHelper
      * @return array[]
      * @deprecated use createProcessingResultResponse() instead.
      */
-    public static function handleProcessingResult(
-        ProcessingResult $processingResult,
-        int $successStatusCode,
-        bool $isMultipleResultResponse = false,
-    ): array {
+    public static function handleProcessingResult(ProcessingResult $processingResult, $successStatusCode, $isMultipleResultResponse = false): array
+    {
         $httpResponseBody = [
             "validationErrors" => [],
             "internalErrors" => [],
@@ -304,15 +378,15 @@ class RestControllerHelper
             "links" => []
         ];
         if (!$processingResult->isValid()) {
-            header('HTTP/1.1 400 Bad Request', true, 400);
+            http_response_code(400);
             $httpResponseBody["validationErrors"] = $processingResult->getValidationMessages();
             ServiceContainer::getLogger()->debug("RestControllerHelper::handleProcessingResult() 400 error", ['validationErrors' => $processingResult->getValidationMessages()]);
         } elseif ($processingResult->hasInternalErrors()) {
-            header('HTTP/1.1 500 Internal Server Error', true, 500);
+            http_response_code(500);
             $httpResponseBody["internalErrors"] = $processingResult->getInternalErrors();
             ServiceContainer::getLogger()->debug("RestControllerHelper::handleProcessingResult() 500 error", ['internalErrors' => $processingResult->getValidationMessages()]);
         } else {
-            header('HTTP/1.1 ' . $successStatusCode, true, $successStatusCode);
+            http_response_code($successStatusCode ?? 0);
             $dataResult = $processingResult->getData();
             $recordsCount = count($dataResult);
             ServiceContainer::getLogger()->debug("RestControllerHelper::handleFhirProcessingResult() Records found", ['count' => $recordsCount]);
@@ -560,6 +634,17 @@ class RestControllerHelper
             return;
         }
 
+        // Skip writes that exist only to return a 405 OperationOutcome. FHIR
+        // routes are shaped "<METHOD> /fhir/<Resource>[/...]", so the resource
+        // is always $items[2].
+        if (
+            ($items[1] ?? '') === 'fhir'
+            && isset($items[2])
+            && self::isUnimplementedFhirWrite((string) $items[2], $reqMethod)
+        ) {
+            return;
+        }
+
         // now setup our interaction types
         if (strcmp($reqMethod, "GET") == 0) {
             $code = !empty(preg_match('/:/', (string) $items[$numberItems - 1])) ? "read" : "search-type";
@@ -661,7 +746,7 @@ class RestControllerHelper
     {
         if ($payload instanceof \JsonSerializable || is_array($payload) || is_numeric($payload) || is_bool($payload)) {
             $response = new JsonResponse($payload);
-        } elseif ($payload instanceof \Stringable || is_string($payload)) {
+        } else if ($payload instanceof \Stringable || is_string($payload)) {
             $response = new Response((string)$payload, Response::HTTP_OK, ['Content-Type' => 'text/html']);
         } else {
             throw new \TypeError(sprintf(
