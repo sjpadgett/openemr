@@ -57,6 +57,11 @@ $ignoreErrors[] = [
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/EtherFaxActions.php',
 ];
 $ignoreErrors[] = [
+    'message' => '#^Call to function is_string\\(\\) with non\\-empty\\-string will always evaluate to true\\.$#',
+    'count' => 1,
+    'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/EtherFaxActions.php',
+];
+$ignoreErrors[] = [
     'message' => '#^Call to function property_exists\\(\\) with OpenEMR\\\\Modules\\\\FaxSMS\\\\EtherFax\\\\FaxStatus and \'FaxResult\' will always evaluate to true\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/EtherFaxActions.php',
@@ -245,11 +250,6 @@ $ignoreErrors[] = [
     'message' => '#^Call to function is_int\\(\\) with int\\<min, \\-1\\>\\|int\\<1, max\\> will always evaluate to true\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../src/Events/Patient/Summary/Card/SectionEvent.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Call to function is_array\\(\\) with array will always evaluate to true\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../src/FHIR/Export/ExportJob.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Call to function is_string\\(\\) with string will always evaluate to true\\.$#',

@@ -55,10 +55,7 @@ class FhirGenericRestController implements IGlobalsAware {
     }
 
     public function getResourcePolicyEnforcementDecisionChecker(): ResourceConstraintFilterer {
-        // TODO: eventually we could inject the ACLs here and do more advanced checking on a per-resource basis
-        if (!isset($this->resourcePolicyEnforcementDecisionChecker)) {
-            $this->resourcePolicyEnforcementDecisionChecker = new ResourceConstraintFilterer();
-        }
+        $this->resourcePolicyEnforcementDecisionChecker ??= new ResourceConstraintFilterer();
         return $this->resourcePolicyEnforcementDecisionChecker;
     }
 
@@ -79,9 +76,7 @@ class FhirGenericRestController implements IGlobalsAware {
 
     protected function getFhirResourcesService(): FhirResourcesService
     {
-        if (!isset($this->fhirResourcesService)) {
-            $this->fhirResourcesService = new FhirResourcesService();
-        }
+        $this->fhirResourcesService ??= new FhirResourcesService();
         return $this->fhirResourcesService;
     }
 

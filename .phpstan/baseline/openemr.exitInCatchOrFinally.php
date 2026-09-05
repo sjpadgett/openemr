@@ -89,11 +89,6 @@ $ignoreErrors[] = [
 $ignoreErrors[] = [
     'message' => '#^exit/die inside a catch block swallows the caught exception and aborts the process\\.$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../interface/patient_file/report/custom_report.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^exit/die inside a catch block swallows the caught exception and aborts the process\\.$#',
-    'count' => 1,
     'path' => __DIR__ . '/../../interface/patient_file/summary/demographics_save.php',
 ];
 $ignoreErrors[] = [
@@ -130,11 +125,6 @@ $ignoreErrors[] = [
     'message' => '#^exit/die inside a catch block swallows the caught exception and aborts the process\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../library/MedEx/API.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^exit/die inside a catch block swallows the caught exception and aborts the process\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../library/ajax/messages/validate_messages_document_ajax.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^exit/die inside a catch block swallows the caught exception and aborts the process\\.$#',

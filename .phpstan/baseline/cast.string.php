@@ -83,11 +83,6 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../gacl/Cache_Lite/Hashed_Cache_Lite.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to string\\.$#',
     'count' => 4,
     'path' => __DIR__ . '/../../gacl/admin/acl_admin.php',
 ];
@@ -238,7 +233,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 11,
+    'count' => 10,
     'path' => __DIR__ . '/../../interface/billing/ub04_dispose.php',
 ];
 $ignoreErrors[] = [
@@ -333,7 +328,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 7,
+    'count' => 6,
     'path' => __DIR__ . '/../../interface/forms/eye_mag/SpectacleRx.php',
 ];
 $ignoreErrors[] = [
@@ -410,11 +405,6 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/newpatient/save.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/note/view.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
@@ -510,11 +500,6 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
     'count' => 6,
     'path' => __DIR__ . '/../../interface/main/authorizations/authorizations_full.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 10,
-    'path' => __DIR__ . '/../../interface/main/backup.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
@@ -803,7 +788,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 25,
+    'count' => 22,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/EtherFaxActions.php',
 ];
 $ignoreErrors[] = [
@@ -813,12 +798,12 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 28,
+    'count' => 27,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/RCFaxClient.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 11,
+    'count' => 9,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/Controller/SignalWireClient.php',
 ];
 $ignoreErrors[] = [
@@ -873,11 +858,6 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-weno/src/Services/DownloadWenoPharmacies.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to string\\.$#',
     'count' => 2,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-weno/src/Services/LogProperties.php',
 ];
@@ -923,7 +903,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 3,
+    'count' => 2,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-weno/templates/weno_fragment.php',
 ];
 $ignoreErrors[] = [
@@ -2183,7 +2163,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 155,
+    'count' => 151,
     'path' => __DIR__ . '/../../library/options.inc.php',
 ];
 $ignoreErrors[] = [
@@ -2313,7 +2293,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 9,
+    'count' => 10,
     'path' => __DIR__ . '/../../portal/import_template.php',
 ];
 $ignoreErrors[] = [
@@ -3113,7 +3093,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
-    'count' => 8,
+    'count' => 4,
     'path' => __DIR__ . '/../../src/Services/DocumentTemplates/DocumentTemplateService.php',
 ];
 $ignoreErrors[] = [
@@ -3535,6 +3515,11 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',
     'count' => 14,
     'path' => __DIR__ . '/../../tests/Tests/E2e/JjEncounterContextMainMenuLinksTest.php',
+];
+$ignoreErrors[] = [
+    'message' => '#^Cannot cast mixed to string\\.$#',
+    'count' => 2,
+    'path' => __DIR__ . '/../../tests/Tests/E2e/KkEditGlobalsTest.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to string\\.$#',

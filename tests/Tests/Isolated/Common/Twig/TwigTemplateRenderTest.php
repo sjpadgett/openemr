@@ -200,6 +200,34 @@ class TwigTemplateRenderTest extends TestCase
             $fixtureDir . '/appointments-future-empty.html',
         ];
 
+        // The dashboard preference/care-team cards render the Edit pencil with
+        // linkMethod 'javascript': the href stays '#' and the expression goes
+        // in an onclick. A literal 'javascript:' href would be stripped to '#'
+        // by |safe_href and lose the behavior entirely.
+        yield 'patient/card/appointments edit button via javascript linkMethod' => [
+            'patient/card/appointments.html.twig',
+            [
+                'title'               => 'Appointments',
+                'id'                  => 'appointments_ps_expand',
+                'initiallyCollapsed'  => false,
+                'btnLabel'            => 'Edit',
+                'btnClass'            => 'js-card-toggle-edit',
+                'btnLink'             => 'event.preventDefault();',
+                'linkMethod'          => 'javascript',
+                'appts'               => [],
+                'recurrAppts'         => [],
+                'pastAppts'           => [],
+                'displayAppts'        => false,
+                'displayRecurrAppts'  => false,
+                'displayPastAppts'    => false,
+                'extraApptDate'       => '',
+                'therapyGroupCategories' => [],
+                'auth'                => true,
+                'resNotNull'          => false,
+            ],
+            $fixtureDir . '/appointments-edit-javascript-link.html',
+        ];
+
         // Calendar render cases — see CalendarRenderDataBuilder for the
         // shape each template iterates. Print views are tested with empty
         // events; the per-event content path is unit-covered by
@@ -361,6 +389,141 @@ class TwigTemplateRenderTest extends TestCase
             ],
             $fixtureDir . '/appointments-with-future.html',
         ];
+
+        // Install Code Set page. The first case covers the post-upload render (messages of both
+        // types, a selected code type, the replace checkbox reflecting an unchecked submission and
+        // the RXCUI help paragraph); the second covers a module-only install where core's own
+        // importers have been filtered out.
+        yield 'super/load_codes with messages' => [
+            'super/load_codes.html.twig',
+            [
+                'csrfToken'          => 'test-csrf-token',
+                'messages'           => [
+                    'success' => ['Code set load successful.', 'Codes inserted: 12, codes updated: 3'],
+                    'error'   => ['The code set could not be imported. Check the system log for details.'],
+                ],
+                'supportedCodeTypes' => ['RXCUI', 'LOINC', 'ICPC2'],
+                'selectedCodeType'   => 'LOINC',
+                'formReplace'        => false,
+                'maxFileSize'        => 350000000,
+                'showRxcuiHelp'      => true,
+            ],
+            $fixtureDir . '/load-codes-with-messages.html',
+        ];
+
+        yield 'super/load_codes without rxcui' => [
+            'super/load_codes.html.twig',
+            [
+                'csrfToken'          => 'test-csrf-token',
+                'messages'           => [],
+                'supportedCodeTypes' => ['ICPC2'],
+                'selectedCodeType'   => '',
+                'formReplace'        => true,
+                'maxFileSize'        => 350000000,
+                'showRxcuiHelp'      => false,
+            ],
+            $fixtureDir . '/load-codes-no-rxcui.html',
+        ];
+
+        $reasonCodeStatii = [
+            '' => ['code' => '', 'description' => 'Select a status code'],
+            'negated' => ['code' => 'negated', 'description' => 'Negated'],
+        ];
+
+        yield 'forms/care_plan reason row (empty)' => [
+            '/forms/care_plan/templates/partials/_reason_row.html.twig',
+            [
+                'row' => [],
+                'rowIndex' => 1,
+                'reasonCodeStatii' => $reasonCodeStatii,
+            ],
+            $fixtureDir . '/care-plan-reason-row-empty.html',
+        ];
+
+        yield 'forms/care_plan reason row (populated)' => [
+            '/forms/care_plan/templates/partials/_reason_row.html.twig',
+            [
+                'row' => [
+                    'reason_code' => 'SNOMED-CT:183932001',
+                    'reason_description' => 'Procedure contraindicated',
+                    'reason_status' => 'negated',
+                    'reason_date_low' => '2026-01-05 09:00',
+                    'reason_date_high' => '2026-02-05 09:00',
+                ],
+                'rowIndex' => 2,
+                'reasonCodeStatii' => $reasonCodeStatii,
+            ],
+            $fixtureDir . '/care-plan-reason-row-populated.html',
+        ];
+
+        yield 'forms/care_plan row actions' => [
+            '/forms/care_plan/templates/partials/_actions.html.twig',
+            ['rowIndex' => 1],
+            $fixtureDir . '/care-plan-actions.html',
+        ];
+
+        yield 'forms/care_plan report' => [
+            '/forms/care_plan/templates/care_plan_report.html.twig',
+            [
+                'rows' => [
+                    [
+                        'user' => 'admin',
+                        'care_plan_type' => 'plan_of_care',
+                        'plan_engagement_category' => 'active',
+                        'code' => 'SNOMED-CT:168731009',
+                        'codetext' => 'Standard chest x-ray',
+                        'description' => "First line\nSecond line",
+                        'date' => '2026-01-05 09:00:00',
+                    ],
+                ],
+            ],
+            $fixtureDir . '/care-plan-report.html',
+        ];
+
+        yield 'patient/card care plan empty' => [
+            'patient/card/care_plan.html.twig',
+            [
+                'id' => 'card_care_plan',
+                'title' => 'Care Plan',
+                'initiallyCollapsed' => false,
+                'forceAlwaysOpen' => false,
+                'auth' => false,
+                'card_bg_color' => '',
+                'card_text_color' => '',
+                'pid' => 1,
+                'rows' => [],
+                'mostRecentDate' => null,
+                'encounter' => null,
+            ],
+            $fixtureDir . '/care-plan-card-empty.html',
+        ];
+
+        yield 'patient/card care plan populated' => [
+            'patient/card/care_plan.html.twig',
+            [
+                'id' => 'card_care_plan',
+                'title' => 'Care Plan',
+                'initiallyCollapsed' => false,
+                'forceAlwaysOpen' => false,
+                'auth' => false,
+                'card_bg_color' => '',
+                'card_text_color' => '',
+                'pid' => 1,
+                'rows' => [
+                    [
+                        'user' => 'admin',
+                        'care_plan_type' => 'plan_of_care',
+                        'code' => 'SNOMED-CT:168731009',
+                        'codetext' => 'Standard chest x-ray',
+                        'description' => "First line\nSecond line",
+                        'date' => '2026-01-05 09:00:00',
+                    ],
+                ],
+                'mostRecentDate' => '2026-01-05',
+                'encounter' => 12,
+            ],
+            $fixtureDir . '/care-plan-card-populated.html',
+        ];
     }
 
     /**
@@ -381,8 +544,18 @@ class TwigTemplateRenderTest extends TestCase
         $GLOBALS['date_display_format'] ??= 0;
         $GLOBALS['disable_translation'] = true;
 
-        $twigContainer = new TwigContainer();
+        // Also load interface/ so encounter form templates resolve under the same
+        // names they use in production, e.g. /forms/care_plan/templates/x.html.twig.
+        $twigContainer = new TwigContainer(self::fileroot() . '/interface');
         $twig = $twigContainer->getTwig();
+
+        // getListItemTitle() reads list_options from the database. Stub it so
+        // templates resolving list values render isolated, with the lookup visible
+        // in the fixture as [list_id:option_id].
+        $twig->addFunction(new TwigFunction(
+            'getListItemTitle',
+            fn (string $listId, ?string $optionId): string => '[' . $listId . ':' . ($optionId ?? '') . ']',
+        ));
 
         // Override setupHeader() before the first render initializes extensions.
         // The real function requires $kernel for event dispatching; the stub
@@ -391,7 +564,7 @@ class TwigTemplateRenderTest extends TestCase
         // show exactly where the real function's output would appear.
         $twig->addFunction(new TwigFunction(
             'setupHeader',
-            fn () => '<!-- setupHeader stub -->',
+            fn (): string => '<!-- setupHeader stub -->',
             ['is_safe' => ['html']]
         ));
 

@@ -72,11 +72,6 @@ $ignoreErrors[] = [
     'path' => __DIR__ . '/../../interface/main/messages/messages.php',
 ];
 $ignoreErrors[] = [
-    'message' => '#^Variable \\$enc_list in empty\\(\\) always exists and is always falsy\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/main/messages/templates/linked_documents.php',
-];
-$ignoreErrors[] = [
     'message' => '#^Variable \\$patient in empty\\(\\) always exists and is not falsy\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/main/messages/trusted-messages-ajax.php',
@@ -105,11 +100,6 @@ $ignoreErrors[] = [
     'message' => '#^Variable \\$tz in empty\\(\\) is never defined\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-faxsms/src/EtherFax/EtherFaxClient.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Variable \\$id in empty\\(\\) is never defined\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/modules/custom_modules/oe-module-weno/src/Bootstrap.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Variable \\$line in empty\\(\\) always exists and is not falsy\\.$#',
@@ -172,6 +162,11 @@ $ignoreErrors[] = [
     'path' => __DIR__ . '/../../interface/patient_file/pos_checkout_ippf.php',
 ];
 $ignoreErrors[] = [
+    'message' => '#^Variable \\$all_allergy_alerts in empty\\(\\) always exists and is not falsy\\.$#',
+    'count' => 1,
+    'path' => __DIR__ . '/../../interface/patient_file/reminder/active_reminder_popup.php',
+];
+$ignoreErrors[] = [
     'message' => '#^Variable \\$arr_report in empty\\(\\) always exists and is always falsy\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/reports/ippf_statistics.php',
@@ -193,6 +188,11 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Variable \\$resp in empty\\(\\) always exists and is not falsy\\.$#',
+    'count' => 1,
+    'path' => __DIR__ . '/../../interface/super/manage_site_files.php',
+];
+$ignoreErrors[] = [
+    'message' => '#^Variable \\$responseErrorAsString in empty\\(\\) always exists and is always falsy\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/super/manage_site_files.php',
 ];

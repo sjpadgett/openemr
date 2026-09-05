@@ -74,16 +74,6 @@ $ignoreErrors[] = [
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/care_plan/new.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/care_plan/save.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/clinical_instructions/new.php',
 ];
 $ignoreErrors[] = [
@@ -105,11 +95,6 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
     'count' => 4,
     'path' => __DIR__ . '/../../interface/forms/eye_mag/SpectacleRx.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/eye_mag/a_issue.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
@@ -174,11 +159,6 @@ $ignoreErrors[] = [
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/requisition/new.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/transfer_summary/new.php',
 ];
 $ignoreErrors[] = [
@@ -195,11 +175,6 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/treatment_plan/save.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/vitals/growthchart/chart.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
@@ -383,17 +358,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 3,
-    'path' => __DIR__ . '/../../interface/patient_file/history/history_sdoh.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 2,
-    'path' => __DIR__ . '/../../interface/patient_file/history/history_sdoh_health_concerns.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 2,
+    'count' => 1,
     'path' => __DIR__ . '/../../interface/patient_file/history/history_sdoh_list.php',
 ];
 $ignoreErrors[] = [
@@ -440,11 +405,6 @@ $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/patient_file/summary/demographics_save.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/procedure_tools/libs/labs_ajax.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
@@ -603,7 +563,7 @@ $ignoreErrors[] = [
 ];
 $ignoreErrors[] = [
     'message' => '#^Cannot cast mixed to int\\.$#',
-    'count' => 4,
+    'count' => 3,
     'path' => __DIR__ . '/../../portal/portal_payment.php',
 ];
 $ignoreErrors[] = [

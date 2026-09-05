@@ -21,7 +21,7 @@
 # ============================================================================
 # Alpine Linux version - centralized setting for easy updates
 # Note: This is NOT meant to be used as a build argument (unlike the flex series)
-ARG ALPINE_VERSION=3.23
+ARG ALPINE_VERSION=3.24
 FROM alpine:${ALPINE_VERSION} AS base
 
 # PHP version configuration
@@ -180,10 +180,10 @@ WORKDIR /openemr
 RUN apk add --no-cache build-base nodejs npm
 # Use Docker buildkit cache mount for npm cache (requires DOCKER_BUILDKIT=1)
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --unsafe-perm \
+    npm install \
     && npm run build \
     && cd ccdaservice \
-    && npm install --unsafe-perm \
+    && npm install --allow-git=all \
     && cd .. \
     && rm -fr node_modules \
     && apk del --no-cache build-base
@@ -290,6 +290,7 @@ COPY upgrade/docker-version \
      upgrade/fsupgrade-10.sh \
      upgrade/fsupgrade-11.sh \
      upgrade/fsupgrade-12.sh \
+     upgrade/fsupgrade-13.sh \
      /root/
 
 # Set upgrade scripts as executable (read and execute for owner only)
@@ -305,7 +306,8 @@ RUN chmod 500 \
     /root/fsupgrade-9.sh \
     /root/fsupgrade-10.sh \
     /root/fsupgrade-11.sh \
-    /root/fsupgrade-12.sh
+    /root/fsupgrade-12.sh \
+    /root/fsupgrade-13.sh
 
 # ============================================================================
 # APACHE RUNTIME DIRECTORY

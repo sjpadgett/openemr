@@ -14,9 +14,6 @@
  * @license   https://github.com/openemr/openemr/blob/master/LICENSE GNU General Public License 3
  */
 
-require_once(__DIR__ . "/../library/forms.inc.php");
-require_once(__DIR__ . "/../library/patient.inc.php");
-
 use OpenEMR\BC\ServiceContainer;
 use OpenEMR\Common\Acl\AccessDeniedHelper;
 use OpenEMR\Common\Acl\AclMain;
@@ -25,6 +22,8 @@ use OpenEMR\Common\Crypto\KeyVersion;
 use OpenEMR\Common\Crypto\PasswordBasedCrypto;
 use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Database\QueryUtils;
+use OpenEMR\Common\Http\RequestTerminator;
+use OpenEMR\Common\Lists\IssueTypeRegistry;
 use OpenEMR\Common\Logging\EventAuditLogger;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\OEGlobalsBag;
@@ -51,7 +50,6 @@ class C_Document extends Controller
     private bool $returnRetrieveKey = false;
 
     public function __construct(
-        $template_mod = "general",
         ?CryptoInterface $crypto = null,
     ) {
         parent::__construct();
@@ -59,7 +57,6 @@ class C_Document extends Controller
         $this->facilityService = new FacilityService();
         $this->patientService = new PatientService();
         $this->documents = [];
-        $this->template_mod = $template_mod;
         $this->assign("FORM_ACTION", OEGlobalsBag::getInstance()->get('webroot') . "/controller.php?" . attr($_SERVER['QUERY_STRING'] ?? ''));
         $this->assign("CURRENT_ACTION", OEGlobalsBag::getInstance()->get('webroot') . "/controller.php?" . "document&");
 
@@ -431,9 +428,8 @@ class C_Document extends Controller
 
     public function view_action(?string $patient_id, $doc_id)
     {
-        global $ISSUE_TYPES;
+        $ISSUE_TYPES = IssueTypeRegistry::issueTypes();
 
-        require_once(__DIR__ . "/../library/lists.inc.php");
         $session = SessionWrapperFactory::getInstance()->getActiveSession();
         $d = new Document($doc_id);
 
@@ -637,13 +633,8 @@ class C_Document extends Controller
             }
         }
 
-        switch ($context) {
-            case "patient_picture":
-                $document_id = $this->patientService->getPatientPictureDocumentId($patient_id);
-                break;
-        }
-
         // For patient_picture context, non-portal users may only request the session's active patient.
+        // Runs before the missing-photo branch so 403 vs 404 does not leak whether the patient has a photo.
         if ($context === 'patient_picture') {
             if (!($session->has('patient_portal_onsite_two') && $session->has('pid'))) {
                 $allowed_pid = OEGlobalsBag::getInstance()->get('pid') ?? 0;
@@ -651,6 +642,18 @@ class C_Document extends Controller
                     AccessDeniedHelper::deny("Attempt to retrieve patient picture for pid $patient_id");
                 }
             }
+        }
+
+        switch ($context) {
+            case "patient_picture":
+                $document_id = $this->patientService->getPatientPictureDocumentId($patient_id);
+                if ($document_id === null) {
+                    if ($disable_exit == true) {
+                        return null;
+                    }
+                    (new RequestTerminator())->error(404, '');
+                }
+                break;
         }
 
         $d = new Document($document_id);
@@ -668,8 +671,14 @@ class C_Document extends Controller
             }
 
             // Verify the document belongs to the requested patient to prevent IDOR.
+            // Internal callers that pre-validate context set returnRetrieveKey and may
+            // omit patient_id; everyone else must pass a matching non-empty numeric pid.
             $doc_pid = $d->get_foreign_id();
-            if ($patient_id !== null && (int)$doc_pid !== (int)$patient_id) {
+            $hasPid = $patient_id !== null && $patient_id !== '' && ctype_digit($patient_id);
+            if (!$hasPid && !$this->isReturnRetrieveKey()) {
+                AccessDeniedHelper::deny("Missing or invalid patient_id for document retrieve");
+            }
+            if ($hasPid && (int)$doc_pid !== (int)$patient_id) {
                 AccessDeniedHelper::deny("Unauthorized attempt to retrieve document $document_id belonging to pid $doc_pid");
             }
         }
@@ -960,13 +969,33 @@ class C_Document extends Controller
             return;
         }
 
+        if (!is_numeric($document_id)) {
+            $this->throwAccessDenied("Invalid document id for move", xl("Documents"));
+        }
+        $docIdInt = (int) $document_id;
+
+        // Require write authorization plus per-doc access before mutating any state.
+        if (!AclMain::aclCheckCore('patients', 'docs', '', ['write', 'addonly'])) {
+            $this->throwAccessDenied("ACL check failed for patients/docs write|addonly: Documents", xl("Documents"));
+        }
+        $sourceDoc = new Document($docIdInt);
+        $sourceDocForeignId = $sourceDoc->get_foreign_id();
+        if (
+            !is_numeric($sourceDoc->get_id())
+            || !is_numeric($sourceDocForeignId)
+            || (int) $sourceDocForeignId <= 0
+            || !$sourceDoc->can_access()
+        ) {
+            AccessDeniedHelper::deny("Unauthorized attempt to move document $docIdInt");
+        }
+
         $messages = '';
 
         $new_category_id = $_POST['new_category_id'];
         $new_patient_id = $_POST['new_patient_id'];
 
         //move to new category
-        if (is_numeric($new_category_id) && is_numeric($document_id)) {
+        if (is_numeric($new_category_id)) {
             $sql = "UPDATE categories_to_documents set category_id = ? where document_id = ?";
             $messages .= sprintf("%s '%s' %s\n", xl('Document moved to new category'), $this->tree->_id_name[$new_category_id]['name'], xl('successfully.'));
             //echo $sql;
@@ -974,8 +1003,8 @@ class C_Document extends Controller
         }
 
         //move to new patient
-        if (is_numeric($new_patient_id) && is_numeric($document_id)) {
-            $d = new Document($document_id);
+        if (is_numeric($new_patient_id)) {
+            $d = new Document((int) $document_id);
             $sql = "SELECT pid from patient_data where pid = ?";
             $result = QueryUtils::querySingleRow($sql, [$new_patient_id]);
 

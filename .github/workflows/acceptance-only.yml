@@ -1,17 +1,29 @@
-# Phase 9 (skip-build re-run for release recovery, 2026-07-28):
-# dedicated workflow_dispatch entry point that re-runs the tarball
+# Phase 9 (skip-build re-run for release recovery, 2026-07-28) +
+# Phase 10c (extract publish-flow to reusable, automate the Phase 9
+# manual re-publish step, 2026-07-30):
+#
+# Dedicated workflow_dispatch entry point that re-runs the tarball
 # acceptance-gate against an artifact already produced by a prior
-# build-release.yml run — without re-building the tarball.
+# build-release.yml run — WITHOUT re-building the tarball — and, on
+# green acceptance, publishes automatically via the same reusable
+# publish workflow build-release.yml uses.
 #
-# The problem this solves: today's recovery path for a release-time
-# acceptance flake on a known-good build is "Re-run failed jobs" in
-# the Actions UI, which re-runs build-package (~15 min of composer +
-# npm + phing) before acceptance restarts. For a transient chromedriver
-# glitch or a wizard-install fluke, that's ~15 min of wasted CI time
-# before the operator learns whether the flake was real.
+# The problem Phase 9 solved: today's recovery path for a release-time
+# acceptance flake on a known-good build was "Re-run failed jobs" in
+# the Actions UI, which re-ran build-package (~15 min of composer +
+# npm + phing) before acceptance restarted. For a transient chromedriver
+# glitch or a wizard-install fluke, that was ~15 min of wasted CI time
+# before the operator learned whether the flake was real.
 #
-# acceptance-only.yml lets an operator dispatch a fresh acceptance run
-# against the OTHER run's already-uploaded artifact:
+# What Phase 10c adds on top: pre-Phase-10c, on green acceptance-only
+# the operator still had to manually re-fire the ORIGINAL build-release
+# run's publish job (or re-dispatch build-release.yml) to actually
+# ship. Phase 10c wires a publish job into acceptance-only.yml that
+# calls .github/workflows/reusable-publish-release.yml — the same
+# reusable build-release.yml now uses — so recovery is now truly
+# one-dispatch fire-and-forget.
+#
+# Flow:
 #
 #   1. fetch-source-artifact — cross-run download-artifact via run-id
 #      to grab openemr-release-candidate-<version> from the failed
@@ -32,25 +44,32 @@
 #      openemr-release-candidate-<version> (same bundle contains both
 #      files; per-format download picks the right file out).
 #
-# No publish job — this is verify-only. On green, the operator manually
-# re-runs the `publish` job of the ORIGINAL build-release run (Actions
-# UI → Re-run failed jobs), which is idempotent (git ls-remote skips
-# existing tag; gh release view short-circuits; gh release upload
-# --clobber overwrites). Or re-dispatches build-release.yml with the
-# same inputs; publish is the only step that mutates external state,
-# and it's designed to be re-run safely.
+#   3. publish — mirrors build-release.yml's publish job. workflow_call
+#      into reusable-publish-release.yml with the artifact re-uploaded
+#      by job 1. release_tag + version_branch come from workflow_dispatch
+#      inputs (see the Phase 10c design note below on why explicit).
+#
+# Explicit release_tag + version_branch inputs (Phase 10c design call):
+# the operator knows both values when dispatching for recovery — they
+# come from the failed build-release.yml run's workflow_dispatch
+# inputs, visible on the source run's page. Auto-deriving via a
+# `gh api /repos/.../actions/runs/<id>` lookup on the source run's
+# input payload would work but adds a fetch step + API-shape coupling
+# for a small ergonomic win. Explicit inputs also mean the operator
+# consciously confirms which version + branch + tag the recovery
+# publish will target — a mild guardrail against operator error.
 #
 # Recovery-time reduction: from ~15-60 min for the full re-run path
 # (build-package rerun + acceptance rerun, at worst) to ~5-10 min
-# (acceptance-only rerun). Real quality-of-life win when release-time
-# pressure is on.
+# (acceptance-only rerun) + no manual re-publish step. Real quality-
+# of-life win when release-time pressure is on.
 #
 # See docs/RELEASE_PROCESS.md's Phase 5 failure-recovery bullet list
-# and docs/artifact-acceptance-testing-plan.md's Phase 9 section for
-# the full design rationale.
+# and docs/artifact-acceptance-testing-plan.md's Phase 9 + Phase 10c
+# sections for the full design rationale.
 
-name: Acceptance-only re-run (tarball)
-run-name: "Acceptance-only re-run for ${{ inputs.version }} (source run ${{ inputs.source_run_id }})"
+name: Acceptance-only re-run + publish (tarball)
+run-name: "Acceptance-only re-run + publish for ${{ inputs.version }} (source run ${{ inputs.source_run_id }})${{ inputs.skip_acceptance && format(' -- SKIP-ACCEPTANCE: {0}', inputs.skip_acceptance_reason) || '' }}"
 
 on:
   workflow_dispatch:
@@ -63,6 +82,31 @@ on:
         description: 'Human-readable version label (e.g. 8.2.0). Must match the source run''s openemr-release-candidate-<version> artifact name.'
         required: true
         type: string
+      release_tag:
+        description: 'Git tag (e.g. v8_2_0) — same value the source build-release run was dispatched with; used for `git tag`, `gh release create/view/upload` in the publish job. Publish is idempotent, so re-firing recovery against an already-tagged release is safe.'
+        required: true
+        type: string
+      version_branch:
+        description: 'Release branch (e.g. rel-820) — same value the source build-release run was dispatched with; publish checks it out for `git tag` creation.'
+        required: true
+        type: string
+      # Phase 14 (2026-08-04) — escape-hatch for known-good artifacts
+      # where acceptance keeps flaking on a test-side issue we haven't
+      # zeroed out yet. Skips the acceptance-gate matrix entirely and
+      # jumps to publish. Requires a non-empty reason for the audit
+      # trail; workflow fails loudly if skip=true and reason is empty.
+      # See the Phase 14 section of docs/artifact-acceptance-testing-plan.md
+      # for the full behavior contract + when-to-use guidance.
+      skip_acceptance:
+        description: 'ESCAPE HATCH -- skip acceptance matrix and publish directly. ONLY use for confirmed test-side flakes on a known-good artifact. Requires non-empty skip_acceptance_reason. Do NOT use on first-time / never-validated artifacts.'
+        required: false
+        type: boolean
+        default: false
+      skip_acceptance_reason:
+        description: 'REQUIRED when skip_acceptance=true. Free-text explanation for the audit trail (appears in run-name, workflow summary, release description). Empty reason with skip=true fails the workflow immediately.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -99,81 +143,76 @@ jobs:
     outputs:
       artifact_name: openemr-release-candidate-${{ inputs.version }}
     steps:
+    # Phase 14 guardrail: if the operator dispatched with
+    # skip_acceptance=true, they MUST supply a non-empty
+    # skip_acceptance_reason so the audit trail carries an
+    # accountable "why." Fail loudly + immediately (before doing
+    # any real work) on skip=true + empty reason.
+    - name: Validate skip-acceptance inputs
+      env:
+        SKIP: ${{ inputs.skip_acceptance }}
+        REASON: ${{ inputs.skip_acceptance_reason }}
+      run: |
+        set -euo pipefail
+        # Strip all whitespace before length check -- a reason that
+        # is only spaces / tabs / newlines is not a real audit trail
+        # entry, so treat it as empty.
+        STRIPPED_REASON="${REASON//[[:space:]]/}"
+        if [ "${SKIP}" = "true" ] && [ -z "${STRIPPED_REASON}" ]; then
+          echo "::error::skip_acceptance=true requires a non-empty skip_acceptance_reason (whitespace-only reasons are rejected). The reason appears in the run-name, workflow summary, and release description for audit-trail visibility. Re-dispatch with an explanation of the confirmed test-side flake being bypassed."
+          exit 1
+        fi
+        if [ "${SKIP}" = "true" ]; then
+          echo "::warning title=Acceptance bypassed::Acceptance matrix skipped for this run. Reason: ${REASON}"
+          {
+            echo "## :warning: Acceptance bypassed"
+            echo ""
+            echo "This run skipped the acceptance-scenario matrix and published directly."
+            echo ""
+            echo "**Reason (operator-supplied):** ${REASON}"
+            echo ""
+            echo "Skip-acceptance is intended for known-good artifacts hitting confirmed test-side flakes."
+            echo "If bypasses are repeating on the same failure class, the underlying flake needs a fix, not a bypass."
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
     # Guardrail A: validate the source run is under 48h old + was
-    # produced by build-release.yml. Both checks live in the same
-    # step so we fail fast before spending download-artifact time
-    # on an ineligible run.
+    # produced by build-release.yml. Delegates to the shared
+    # validate-source-run.sh (see that script's header for the
+    # per-guard rationale). Extracted from the previous inline block
+    # so acceptance-only.yml and docker-acceptance-only.yml share the
+    # same validation surface — a fix to the age check or the
+    # workflow_path check lands once instead of twice.
     #
-    # Why 48h: a stale artifact risks not matching the current
-    # rel-branch tip (some other PR might have landed in the
-    # meantime), and the whole point of acceptance-only is fast
-    # recovery from a known-good build — if it's been >48h since
-    # the build, "re-run failed jobs" or a fresh build-release
-    # dispatch is the safer path.
-    #
-    # Why check workflow_id: the input is a raw run ID, and
-    # actions/download-artifact will happily fetch an artifact by
-    # name from any run the token can see. Confirming the source
-    # run is a build-release.yml run means we're validating a
-    # release-shape bundle, not (say) an unrelated workflow that
-    # happens to have uploaded an artifact of the same name shape
-    # (e.g., a hand-crafted repro of an acceptance failure).
+    # Only EXPECTED_WORKFLOW_PATH is passed (no EXPECTED_CANDIDATE_TAG):
+    # tarball recovery has no operator-supplied candidate binding to
+    # cross-check.
     - name: Validate source run eligibility
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        EXPECTED_WORKFLOW_PATH: .github/workflows/build-release.yml
       run: |
         set -euo pipefail
 
-        # Fetch the source run's metadata. jq -e turns absent/false
-        # values into a non-zero exit so a garbage run ID (bad number,
-        # deleted run) fails here rather than at download time with a
-        # confusing "artifact not found."
         echo "==> Fetching source run metadata"
-        run_json=$(gh api "repos/${REPO}/actions/runs/${SOURCE_RUN_ID}")
+        RUN_JSON=$(gh api "repos/${REPO}/actions/runs/${SOURCE_RUN_ID}")
+        export RUN_JSON
 
-        source_workflow_id=$(printf '%s' "$run_json" | jq -er .workflow_id)
-        source_created_at=$(printf '%s' "$run_json" | jq -er .created_at)
-        source_name=$(printf '%s' "$run_json" | jq -er .name)
-        source_path=$(printf '%s' "$run_json" | jq -er .path)
+        # Non-strict extraction handles BOTH missing fields (`.field //
+        # "unknown"`) AND malformed JSON payload (`|| echo "unknown"`
+        # captures the jq-parse-failure case). Without the outer capture,
+        # a non-JSON RUN_JSON would fail these probes under set -euo
+        # pipefail before the friendly BATS-tested ::error:: guards in
+        # validate-source-run.sh can run. These three fields are only
+        # used for the log line below.
+        source_name=$(printf '%s' "$RUN_JSON" | jq -r '.name // "unknown"' 2>/dev/null || echo "unknown")
+        source_path=$(printf '%s' "$RUN_JSON" | jq -r '.path // "unknown"' 2>/dev/null || echo "unknown")
+        source_created_at=$(printf '%s' "$RUN_JSON" | jq -r '.created_at // "unknown"' 2>/dev/null || echo "unknown")
+        echo "    source run: id=${SOURCE_RUN_ID} name='${source_name}' path='${source_path}' created_at='${source_created_at}'"
 
-        echo "    source run: id=${SOURCE_RUN_ID} name='${source_name}' path='${source_path}'"
-        echo "    source run: workflow_id=${source_workflow_id} created_at=${source_created_at}"
-
-        # workflow_id check: look up build-release.yml's ID in this
-        # repo and compare. Uses .path rather than .name to avoid
-        # brittleness if the workflow name is edited (path is the
-        # file location, which is more stable). GitHub's workflow
-        # listing endpoint returns .path as ".github/workflows/<file>".
-        echo "==> Confirming source run is a build-release.yml run"
-        expected_path=".github/workflows/build-release.yml"
-        if [ "$source_path" != "$expected_path" ]; then
-          echo "::error::source run ${SOURCE_RUN_ID} was produced by '${source_path}', not '${expected_path}'."
-          echo "::error::acceptance-only only accepts source runs from build-release.yml — the artifact shape (openemr-release-candidate-<version>) is specific to that workflow."
-          exit 1
-        fi
-
-        # Age check: 48h ceiling on source-run age. Use date -d for
-        # portable ISO-8601 parsing; both dates are UTC by convention
-        # so no TZ juggling needed.
-        echo "==> Checking source run age (<= 48h)"
-        source_epoch=$(date -d "$source_created_at" +%s)
-        now_epoch=$(date -u +%s)
-        age_seconds=$(( now_epoch - source_epoch ))
-        age_hours=$(( age_seconds / 3600 ))
-        ceiling_seconds=$(( 48 * 3600 ))
-
-        echo "    source_epoch=${source_epoch} now_epoch=${now_epoch} age_hours=${age_hours}"
-
-        if [ "$age_seconds" -gt "$ceiling_seconds" ]; then
-          echo "::error::source run ${SOURCE_RUN_ID} is ${age_hours}h old (> 48h ceiling)."
-          echo "::error::An artifact this old risks being stale — the rel-branch may have advanced since build, and re-running acceptance against the old bundle would validate a version the branch has already moved past."
-          echo "::error::Recovery paths for stale runs: (1) dispatch build-release.yml fresh with the same version_branch + version + release_tag inputs to rebuild + re-gate from current rel-branch tip; (2) re-run the failed build-release run in-place via the Actions UI (rebuilds from the same commit the annotated tag points at, which is still the ship point)."
-          exit 1
-        fi
-
-        echo "==> source run eligible: age=${age_hours}h, workflow=build-release.yml"
+        .github/scripts/validate-source-run.sh
 
     # Cross-run artifact download: actions/download-artifact@v8 with
     # both `run-id` and `github-token` fetches from ANOTHER run in the
@@ -258,9 +297,62 @@ jobs:
   acceptance-gate:
     name: Acceptance gate
     needs: [fetch-source-artifact]
+    # Phase 14: bypass the acceptance matrix when the operator
+    # explicitly opts out. The publish job's if: absorbs the
+    # skipped-result and still fires — see its comment for the
+    # needs/if interaction rationale.
+    if: ${{ inputs.skip_acceptance != true }}
     uses: ./.github/workflows/acceptance-package.yml
     with:
       caller_tarball_artifact: ${{ needs.fetch-source-artifact.outputs.artifact_name }}
       caller_zip_artifact: ${{ needs.fetch-source-artifact.outputs.artifact_name }}
       to_version: ${{ inputs.version }}
+    secrets: inherit
+
+  # Job 3 (Phase 10c, 2026-07-30): on green acceptance, publish
+  # automatically via the shared reusable-publish-release.yml — the
+  # same reusable build-release.yml's publish job uses. Removes the
+  # last manual step in the Phase 9 recovery path (previously the
+  # operator had to re-fire the ORIGINAL build-release run's publish
+  # job in the Actions UI).
+  #
+  # `needs: [fetch-source-artifact, acceptance-gate]` gates publish
+  # on both:
+  #   * fetch-source-artifact — supplies the artifact_name output the
+  #     reusable's download-artifact step consumes.
+  #   * acceptance-gate — no publish if acceptance failed.
+  #
+  # Same master-only ref guard as fetch-source-artifact. The reusable
+  # itself uses `uses: ./.github/workflows/reusable-publish-release.yml`
+  # which resolves against this workflow's own ref (master) — the same
+  # freshness-over-rel-branch trade-off acceptance-gate already made.
+  # Since publish is a workflow_call and not a job with steps, the `if:`
+  # gate must appear on the job stanza directly.
+  publish:
+    name: Publish release
+    needs: [fetch-source-artifact, acceptance-gate]
+    # Phase 14 needs/if interaction: `acceptance-gate` is gated by
+    # `if: skip_acceptance != true`, meaning it either runs to
+    # success/failure OR is skipped-by-if. Downstream jobs with
+    # `needs: [acceptance-gate]` auto-skip when a needed job's
+    # `if:` skipped it, UNLESS the downstream uses always()/!failure()
+    # to opt out of that auto-skip. Here we want publish to fire in
+    # BOTH cases (acceptance passed OR was bypassed with reason),
+    # but NOT when acceptance ran and failed AND NOT when the
+    # workflow run itself was cancelled (always() alone would fire
+    # publish through a workflow-level cancel — !cancelled() blocks
+    # that). Fetch-source result must be 'success' regardless.
+    if: >-
+      always() && !cancelled()
+      && github.repository_owner == 'openemr' && github.repository == 'openemr/openemr'
+      && github.ref == 'refs/heads/master'
+      && needs.fetch-source-artifact.result == 'success'
+      && needs.acceptance-gate.result != 'failure'
+      && needs.acceptance-gate.result != 'cancelled'
+    uses: ./.github/workflows/reusable-publish-release.yml
+    with:
+      version: ${{ inputs.version }}
+      release_tag: ${{ inputs.release_tag }}
+      version_branch: ${{ inputs.version_branch }}
+      artifact_name: ${{ needs.fetch-source-artifact.outputs.artifact_name }}
     secrets: inherit

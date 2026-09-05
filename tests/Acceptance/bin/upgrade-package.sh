@@ -129,6 +129,9 @@ TO_TARBALL_URL="https://github.com/openemr/openemr/releases/download/${TO_TAG_NA
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 
+# shellcheck source=tests/Acceptance/bin/lib/extract-zip.sh
+source "${SCRIPT_DIR}/lib/extract-zip.sh"
+
 export HELPER_PATH="${SCRIPT_DIR}/install-helper.php"
 export COMPOSE_FILE="${REPO_ROOT}/.github/docker/acceptance-package-compose.yml"
 export COMPOSE_PROJECT_NAME="openemr-acceptance-package"
@@ -212,28 +215,16 @@ case "${ARTIFACT_FORMAT}" in
         ;;
     zip)
         # Same unzip + single-top-level-dir enforcement as
-        # boot-package.sh's zip branch. Download and zip branches are
-        # mutually exclusive (this branch only runs when --to-local-zip
-        # is set) so the bare EXIT trap doesn't clobber the download
-        # branch's ARTIFACT_PATH cleanup.
-        if ! command -v unzip >/dev/null 2>&1; then
-            echo "::error::unzip is required for --to-local-zip / zip extraction but was not found on PATH" >&2
-            exit 1
-        fi
-        ZIP_TMP="$(mktemp -d -t "openemr-acceptance-upgrade-zip.XXXXXX")"
-        trap 'rm -rf "${ZIP_TMP}"' EXIT
-        unzip -qo "${ARTIFACT_PATH}" -d "${ZIP_TMP}"
-        shopt -s nullglob
-        ZIP_ROOTS=("${ZIP_TMP}"/*)
-        shopt -u nullglob
-        if [[ ${#ZIP_ROOTS[@]} -ne 1 || ! -d "${ZIP_ROOTS[0]}" ]]; then
-            echo "::error::expected exactly one top-level directory in ${ARTIFACT_PATH}, found ${#ZIP_ROOTS[@]}:" >&2
-            printf '  %s\n' "${ZIP_ROOTS[@]}" >&2
-            exit 1
-        fi
-        shopt -s dotglob
-        mv "${ZIP_ROOTS[0]}"/* "${TO_TARBALL_DIR}"/
-        shopt -u dotglob
+        # boot-package.sh's zip branch — both call the shared helper.
+        # Download and zip branches are mutually exclusive (this branch
+        # only runs when --to-local-zip is set) so the helper's bare
+        # EXIT trap doesn't clobber the download branch's
+        # ARTIFACT_PATH cleanup.
+        extract_zip_flattening_single_top_level_dir \
+            "${ARTIFACT_PATH}" \
+            "${TO_TARBALL_DIR}" \
+            "openemr-acceptance-upgrade-zip.XXXXXX" \
+            "--to-local-zip / zip extraction"
         ;;
     *)
         echo "::error::unexpected ARTIFACT_FORMAT '${ARTIFACT_FORMAT}' (expected 'tar' or 'zip')" >&2
@@ -313,6 +304,41 @@ for attempt in $(seq 1 60); do
     fi
     sleep 5
 done
+
+# Post-upgrade DB version assertion (openemr/openemr#13634).
+# sql_upgrade.php bumps the `version` row as its final step, so a
+# successful upgrade leaves DB matching the to-side tarball's
+# version.php. Catches the exact bug class fixed in #13586/#13587
+# (fsupgrade sed pattern targeted a refactored-away line → silent
+# no-op → version row never advanced, upgrade replayed from 2.9.0
+# on every run). Skipped in --skip-sql-upgrade mode: that path exits
+# before this point (line ~281) because the Panther wizard test runs
+# the upgrade later.
+#
+# Assertion source: ACCEPTANCE_EXPECTED_VERSION env if set, else
+# TO_VERSION. The env variant is set by the acceptance workflow to
+# the same value it feeds the PHPUnit version-display / version-api
+# groups — on the build_locally path this reads the checkout's
+# version.php (the actual shipped self-reported version), NOT the
+# cosmetic `--release-version` label passed to PackageAssembler
+# (99.99.99 default). TO_VERSION as fallback keeps this script usable
+# standalone (dev-time upgrade without the workflow's env-plumbing)
+# and on the shipped-tarball path where label == actual anyway. See
+# openemr/openemr#13753 for the full failure trace when the two
+# diverged.
+# `mariadb` (not `mysql`) — the mariadb 11.8 image ships only the
+# `mariadb` client binary; `mysql` is not on $PATH.
+EXPECTED="${ACCEPTANCE_EXPECTED_VERSION:-${TO_VERSION}}"
+echo "==> Asserting DB version matches ${EXPECTED}"
+DB_VERSION="$(docker compose exec -T mysql \
+    mariadb -uroot -proot openemr -sN \
+    -e "SELECT CONCAT(v_major,'.',v_minor,'.',v_patch) FROM version" \
+    2>/dev/null || echo "query-failed")"
+if [[ "${DB_VERSION}" != "${EXPECTED}" ]]; then
+    echo "::error::post-upgrade DB version '${DB_VERSION}' does not match expected '${EXPECTED}' (see openemr/openemr#13634)" >&2
+    exit 1
+fi
+echo "    DB version=${DB_VERSION}"
 
 echo ""
 echo "==> Upgrade complete: ${FROM_VERSION} → ${TO_VERSION}"

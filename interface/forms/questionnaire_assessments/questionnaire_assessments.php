@@ -15,6 +15,7 @@ use OpenEMR\Common\Acl\AccessDeniedHelper;
 use OpenEMR\Common\Acl\AclMain;
 use OpenEMR\Common\Csrf\CsrfUtils;
 use OpenEMR\Common\Forms\CoreFormToPortalUtility;
+use OpenEMR\Common\Forms\EncounterFormAccess;
 use OpenEMR\Common\Session\SessionWrapperFactory;
 use OpenEMR\Core\Header;
 use OpenEMR\Core\OEGlobalsBag;
@@ -34,9 +35,6 @@ require_once(__DIR__ . '/../../globals.php');
 $srcdir = OEGlobalsBag::getInstance()->getSrcDir();
 $rootdir = OEGlobalsBag::getInstance()->getString('rootdir');
 
-require_once($srcdir . '/api.inc.php');
-require_once($srcdir . '/user.inc.php');
-require_once($srcdir . '/registry.inc.php');
 require_once($srcdir . '/options.inc.php');
 
 $questionnaireService = new QuestionnaireService();
@@ -131,6 +129,10 @@ try {
             'questionnaire_assessments',
             $nonNegativeInt($session->get('pid', 0)) ?? 0
         );
+
+        if (!$isPortal) {
+            EncounterFormAccess::assertFormBelongsToSessionPatient($formid, 'questionnaire_assessments');
+        }
 
         $questionnaireJson = is_string($form['questionnaire'] ?? null)
             ? $form['questionnaire']
