@@ -43,6 +43,7 @@
  * @param string $text
  * @return string
  */
+#[NoDiscard]
 function js_escape($text)
 {
     return json_encode($text);
@@ -53,6 +54,7 @@ function js_escape($text)
  *
  * @param string $text
  */
+#[NoDiscard]
 function attr_js($text): string
 {
     return attr(json_encode($text));
@@ -63,6 +65,7 @@ function attr_js($text): string
  *
  * @param string $text
  */
+#[NoDiscard]
 function attr_url($text): string
 {
     return attr(urlencode($text ?? ''));
@@ -82,6 +85,7 @@ function attr_url($text): string
  * @param string|null $url The URL to validate and escape
  * @return string The escaped URL, or '#' if the scheme is disallowed
  */
+#[NoDiscard]
 function safe_href(?string $url): string
 {
     $url = trim($url ?? '');
@@ -130,6 +134,7 @@ function safe_href(?string $url): string
  * @param string $text
  * @return string
  */
+#[NoDiscard]
 function js_url($text)
 {
     return js_escape(urlencode($text ?? ''));
@@ -140,6 +145,7 @@ function js_url($text)
  *
  * @param string $text
  */
+#[NoDiscard]
 function errorLogEscape($text): string
 {
     return attr($text);
@@ -157,6 +163,7 @@ function errorLogEscape($text): string
  * less stringent (or more stringent) mechanisms to escape for csv.
  * @param string $text
  */
+#[NoDiscard]
 function csvEscape($text): string
 {
     // 1. Remove all the following characters:  = + " |
@@ -182,14 +189,16 @@ function csvEscape($text): string
  * TODO: not sure if need to escape ' and ", which are escaping for now (via the ENT_QUOTES flag)
  * @param string $text
  */
+#[NoDiscard]
 function xmlEscape($text): string
 {
-    return htmlspecialchars(($text ?? ''), ENT_XML1 | ENT_QUOTES);
+    return htmlspecialchars($text ?? '', ENT_XML1 | ENT_QUOTES);
 }
 
 /**
  * Special function to remove the 'javascript' strings (case insensitive) for when including a variable within a html link
  */
+#[NoDiscard]
 function javascriptStringRemove(?string $text): string
 {
     $returnText = str_ireplace('javascript', '', $text ?? '');
@@ -204,13 +213,14 @@ function javascriptStringRemove(?string $text): string
 /**
  * Special function to check if 'javascript' string (case insensitive) is in a variable within a html link
  */
+#[NoDiscard]
 function javascriptStringCheck(?string $text): bool
 {
-    if (stripos($text ?? '', 'javascript') === false) {
-        return false;
-    } else {
-        return true;
-    }
+    // Must be case-insensitive: browsers execute mixed-case javascript: URIs,
+    // and javascriptStringRemove() strips 'javascript' case-insensitively, so a
+    // case-sensitive check here would abort the recursion early and leave an
+    // executable payload (e.g. 'javasJAVASCRIPTcript' -> 'javascript').
+    return stripos($text ?? '', 'javascript') !== false;
 }
 
 /**
@@ -231,9 +241,10 @@ function javascriptStringCheck(?string $text): bool
  *                     or ">".
  * @return string The string, with "&", "<", and ">" escaped.
  */
+#[NoDiscard]
 function text($text): string
 {
-    return htmlspecialchars(($text ?? ''), ENT_NOQUOTES);
+    return htmlspecialchars($text ?? '', ENT_NOQUOTES);
 }
 
 /**
@@ -256,6 +267,7 @@ function text($text): string
  * @param int $depth The current recursive depth of the escaping function.  Defaults to 0 for initial call
  * @return array The array that has each key and property escaped.
  */
+#[NoDiscard]
 function textArray(array $arr, $depth = 0)
 {
     if ($depth > 50) {
@@ -288,9 +300,10 @@ function textArray(array $arr, $depth = 0)
  *
  * @param string $text The string to escape
  */
+#[NoDiscard]
 function attr($text): string
 {
-    return htmlspecialchars(($text ?? ''), ENT_QUOTES);
+    return htmlspecialchars($text ?? '', ENT_QUOTES);
 }
 
 /**
@@ -305,13 +318,11 @@ function attr($text): string
  * PHP that includes / requires this file. Either that, or write reasonable
  * documentation and clean up the name.
  */
+#[NoDiscard]
 function hsc_private_xl_or_warn(?string $key): string
 {
-    if ($key === null) {
-        return '';
-    }
     // @phpstan-ignore argument.type (intentional pass-through wrapper for translation)
-    return xl($key);
+    return $key === null ? '' : xl($key);
 }
 
 /**
@@ -320,6 +331,7 @@ function hsc_private_xl_or_warn(?string $key): string
  * @param literal-string $key The string to translate and escape.
  * @return string The translated string, with "&", "<", and ">" escaped.
  */
+#[NoDiscard]
 function xlt($key)
 {
     return text(hsc_private_xl_or_warn($key));
@@ -331,6 +343,7 @@ function xlt($key)
  * @param literal-string $key The string to translate and escape.
  * @return string The translated string, with (&), (<), (>), ("), and (') escaped.
  */
+#[NoDiscard]
 function xla($key)
 {
     return attr(hsc_private_xl_or_warn($key));
@@ -342,6 +355,7 @@ function xla($key)
  * @param literal-string $key The string to translate and escape.
  * @return string The translated string escaped for JavaScript.
  */
+#[NoDiscard]
 function xlj($key)
 {
     return js_escape(hsc_private_xl_or_warn($key));
@@ -353,7 +367,20 @@ function xlj($key)
  * @param literal-string $key The string to translate and escape.
  * @return string The translated string, escaped for XML contexts.
  */
+#[NoDiscard]
 function xlx($key)
 {
     return xmlEscape(hsc_private_xl_or_warn($key));
+}
+
+/**
+ * Translate via xl() and then escape via csvEscape() for use in XML contexts.
+ *
+ * @param literal-string $key The string to translate and escape.
+ * @return string The translated string, escaped for CSV contexts.
+ */
+#[NoDiscard]
+function xlc($key)
+{
+    return csvEscape(hsc_private_xl_or_warn($key));
 }

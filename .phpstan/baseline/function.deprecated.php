@@ -59,12 +59,6 @@ $ignoreErrors[] = [
     'message' => '#^Call to deprecated function addForm\\(\\)\\:
 Use FormService\\:\\:addForm\\(\\) instead$#',
     'count' => 1,
-    'path' => __DIR__ . '/../../interface/fax/fax_dispatch.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Call to deprecated function addForm\\(\\)\\:
-Use FormService\\:\\:addForm\\(\\) instead$#',
-    'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/LBF/new.php',
 ];
 $ignoreErrors[] = [
@@ -114,12 +108,6 @@ $ignoreErrors[] = [
 Use FormService\\:\\:addForm\\(\\) instead$#',
     'count' => 1,
     'path' => __DIR__ . '/../../interface/forms/bronchitis/save.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Call to deprecated function addForm\\(\\)\\:
-Use FormService\\:\\:addForm\\(\\) instead$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/care_plan/save.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Call to deprecated function addForm\\(\\)\\:
@@ -240,18 +228,6 @@ $ignoreErrors[] = [
 use CodeTypesService\\:\\:collectCodeTypes\\(\\)$#',
     'count' => 2,
     'path' => __DIR__ . '/../../interface/forms/procedure_order/common.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Call to deprecated function checkUserSetting\\(\\)\\:
-7\\.0\\.3 see UserSettingsService\\:\\:checkUserSetting$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/questionnaire_assessments/questionnaire_assessments.php',
-];
-$ignoreErrors[] = [
-    'message' => '#^Call to deprecated function addForm\\(\\)\\:
-Use FormService\\:\\:addForm\\(\\) instead$#',
-    'count' => 1,
-    'path' => __DIR__ . '/../../interface/forms/questionnaire_assessments/save.php',
 ];
 $ignoreErrors[] = [
     'message' => '#^Call to deprecated function addForm\\(\\)\\:

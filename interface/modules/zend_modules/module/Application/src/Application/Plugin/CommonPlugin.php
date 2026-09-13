@@ -58,11 +58,6 @@ class CommonPlugin extends AbstractPlugin
         return ApplicationTable::fixDate($date, $output_format, $input_format);
     }
 
-    public static function escapeLimit($val)
-    {
-        return escape_limit($val);
-    }
-
     /*
   * Insert the imprted data to audit master table
   *
@@ -143,7 +138,7 @@ class CommonPlugin extends AbstractPlugin
         }
 
         foreach ($res as $row) {
-            $sel = ($row['option_id'] == $selected) ? true : false;
+            $sel = $row['option_id'] == $selected;
             $rows[$i] = [
                 'value' => htmlspecialchars((string) $row['option_id'], ENT_QUOTES),
                 'label' => $this->listenerObject->z_xlt($row['title']),

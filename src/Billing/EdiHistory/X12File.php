@@ -84,7 +84,7 @@ class X12File
     // properties
     private $filepath = '';
     private $filename = '';
-    private $type = '';
+    private string $type = '';
     private $version = '';
     private $text = '';
     private $length = 0;
@@ -100,7 +100,7 @@ class X12File
     private $constructing = false;
     private $gstype_ar = ['HB' => '271', 'HS' => '270', 'HR' => '276', 'HN' => '277',
                             'HI' => '278', 'HP' => '835', 'FA' => '999', 'HC' => '837'];
-    function __construct($file_path = '', $mk_segs = true, $text = false)
+    public function __construct($file_path = '', $mk_segs = true, $text = false)
     {
         if ($file_path === '') {
             return;
@@ -111,10 +111,10 @@ class X12File
             $this->filename = basename($this->filepath);
             $f_text = file_get_contents($this->filepath);
             $testval = ($f_text) ? $this->edih_x12_scan($f_text) : '';
-            $this->valid = ( strpos($testval, 'v') ) ? true : false;
-            $this->isx12 = ( strpos($testval, 'i') ) ? true : false;
-            $this->hasGS = ( strpos($testval, 'g') ) ? true : false;
-            $this->hasST = ( strpos($testval, 's') ) ? true : false;
+            $this->valid = (bool) strpos($testval, 'v');
+            $this->isx12 = (bool) strpos($testval, 'i');
+            $this->hasGS = (bool) strpos($testval, 'g');
+            $this->hasST = (bool) strpos($testval, 's');
             if ($this->valid) {
                 $this->constructing = true;
                 $this->text = ($text) ? $f_text : '';
@@ -126,13 +126,13 @@ class X12File
                         $this->segments = $this->edih_x12_segments($f_text);
                         if (is_array($this->segments) && count($this->segments)) {
                             $this->envelopes = $this->edih_x12_envelopes();
-                            $this->type = $this->edih_x12_type();
+                            $this->type = $this->edih_x12_type() ?: '';
                         } else {
                             $this->message[] = 'edih_x12_file: error in creating segment array ' . \text($this->filename) . PHP_EOL;
                         }
                     } else {
                         // read file contents to try and determine x12 type
-                        $this->type = $this->edih_x12_type($f_text);
+                        $this->type = $this->edih_x12_type($f_text) ?: '';
                     }
                 }
             }
@@ -196,7 +196,7 @@ class X12File
     {
         return $this->filename;
     }
-    public function edih_type()
+    public function edih_type(): string
     {
         return $this->type;
     }
@@ -747,7 +747,7 @@ class X12File
                 if (strncmp($sn, 'HL' . $de, 3) == 0) {
                     $seg_ar = explode($de, (string) $seg_text);
                     if (isset($seg_ar[3]) && $seg_ar[3]) {
-                        $chk_trn = ( strpos('|22|23|PT', $seg_ar[3]) ) ? true : false;
+                        $chk_trn = (bool) strpos('|22|23|PT', $seg_ar[3]);
                     } else {
                         $this->message[] = 'edih_x12_envelopes: missing HL03 level element';
                     }
@@ -1313,7 +1313,7 @@ class X12File
      * @param array $arg_array note: all element values except 'keys' are strings
      * @return array
      */
-    function edih_x12_slice($arg_array, $file_text = '')
+    public function edih_x12_slice($arg_array, $file_text = '')
     {
         $ret_ar = [];
         $f_str = '';
