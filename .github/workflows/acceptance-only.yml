@@ -143,6 +143,19 @@ jobs:
     outputs:
       artifact_name: openemr-release-candidate-${{ inputs.version }}
     steps:
+    # Checkout master so the later steps can call scripts under
+    # .github/scripts/ (validate-source-run.sh). Without this the
+    # `Validate source run eligibility` step below fails with
+    # "No such file or directory" — the fetch-source-artifact job
+    # runs standalone and doesn't inherit a checkout from anywhere.
+    # Introduced as a latent bug by #13294 (Phase 10e-2 extract of
+    # the inline validation logic to a shared script); surfaced only
+    # when the workflow was first exercised end-to-end on the 8.4.0
+    # ship recovery attempt on 2026-09-13.
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
     # Phase 14 guardrail: if the operator dispatched with
     # skip_acceptance=true, they MUST supply a non-empty
     # skip_acceptance_reason so the audit trail carries an
@@ -187,12 +200,19 @@ jobs:
     # Only EXPECTED_WORKFLOW_PATH is passed (no EXPECTED_CANDIDATE_TAG):
     # tarball recovery has no operator-supplied candidate binding to
     # cross-check.
+    #
+    # EXPECTED_WORKFLOW_PATH accepts both `build-release.yml` (manual
+    # workflow_dispatch flow) and `build-release-on-tag.yml` (auto-fires
+    # from ship-release.yml tag creation) — both produce the same
+    # `openemr-release-candidate-<version>` artifact shape, so either is
+    # a valid recoverable source. Comma-separated list per the script's
+    # env-var contract.
     - name: Validate source run eligibility
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-        EXPECTED_WORKFLOW_PATH: .github/workflows/build-release.yml
+        EXPECTED_WORKFLOW_PATH: .github/workflows/build-release.yml,.github/workflows/build-release-on-tag.yml
       run: |
         set -euo pipefail
 
