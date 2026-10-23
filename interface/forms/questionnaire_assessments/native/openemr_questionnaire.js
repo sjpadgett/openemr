@@ -3614,6 +3614,11 @@
             this.bindDocumentListeners();
             container.replaceChildren();
             container.classList.add('oe-questionnaire-runtime');
+            // The form's own language, so its text is read in that language (WCAG 3.1.2).
+            const language = typeof this.runtime.questionnaire.language === 'string' ? this.runtime.questionnaire.language.trim() : '';
+            if (language !== '') {
+                container.lang = language;
+            }
             container.classList.toggle('oe-questionnaire-guides', this.runtime.options.hideTreeLine === false);
             const formHeader = this.renderFormHeader();
             if (formHeader) {
@@ -3765,14 +3770,31 @@
                 const required = document.createElement('span');
                 required.className = 'text-danger ml-1';
                 required.textContent = '*';
+                // The required state is announced from aria-required below, not as "star".
+                required.setAttribute('aria-hidden', 'true');
                 label.appendChild(required);
             }
             header.appendChild(label);
 
             const inputId = safeId(storageKey);
+            label.id = inputId + '-label';
             const input = this.renderInput(item, storageKey);
-            if (input.querySelector('#' + inputId)) {
+            const single = input.querySelector('#' + inputId);
+            if (single) {
                 label.htmlFor = inputId;
+                if (item.required === true) {
+                    single.setAttribute('aria-required', 'true');
+                }
+            } else if (input.querySelector('input[type="radio"], input[type="checkbox"]')) {
+                // Answers as radios or checkboxes are one group named by the
+                // question, so assistive technology reads the question with
+                // each answer (WCAG 1.3.1, 4.1.2).
+                const radios = input.querySelector('input[type="checkbox"]') === null;
+                input.setAttribute('role', radios ? 'radiogroup' : 'group');
+                input.setAttribute('aria-labelledby', label.id);
+                if (item.required === true && radios) {
+                    input.setAttribute('aria-required', 'true');
+                }
             }
 
             const controls = this.buildDisplayControls(item);
@@ -4549,12 +4571,53 @@
             for (const node of this.nodes.values()) {
                 node.classList.remove('oe-questionnaire-invalid');
             }
+            for (const message of this.container?.querySelectorAll('.oe-questionnaire-error') ?? []) {
+                message.remove();
+            }
+            for (const control of this.container?.querySelectorAll('[data-oeq-invalid]') ?? []) {
+                control.removeAttribute('aria-invalid');
+                control.removeAttribute('aria-describedby');
+                control.removeAttribute('data-oeq-invalid');
+            }
         }
 
+        // Each issue's message is shown at its question and tied to the
+        // question's control (aria-invalid, aria-describedby), so the error
+        // is identified in text where it is, not by colour alone.
         showValidationIssues(issues) {
             this.clearValidationState();
+            const messages = new Map();
             for (const issue of issues) {
-                this.nodes.get(issue.storageKey ?? issue.linkId)?.classList.add('oe-questionnaire-invalid');
+                const key = issue.storageKey ?? issue.linkId;
+                const node = this.nodes.get(key);
+                if (!node) {
+                    continue;
+                }
+                node.classList.add('oe-questionnaire-invalid');
+                if (typeof issue.message !== 'string' || issue.message === '') {
+                    continue;
+                }
+                if (!messages.has(key)) {
+                    const message = document.createElement('div');
+                    message.className = 'oe-questionnaire-error invalid-feedback d-block';
+                    message.id = safeId(key) + '-error';
+                    const control = node.querySelector(':scope > .oe-questionnaire-control');
+                    if (control) {
+                        control.after(message);
+                        const target = control.querySelector('#' + safeId(key)) ?? (control.getAttribute('role') ? control : null);
+                        if (target) {
+                            target.setAttribute('aria-invalid', 'true');
+                            target.setAttribute('aria-describedby', message.id);
+                            target.setAttribute('data-oeq-invalid', '');
+                        }
+                    } else {
+                        node.appendChild(message);
+                    }
+                    messages.set(key, message);
+                }
+                const line = document.createElement('div');
+                line.textContent = issue.message;
+                messages.get(key).appendChild(line);
             }
         }
     }
