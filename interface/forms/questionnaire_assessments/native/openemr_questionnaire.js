@@ -263,6 +263,17 @@
         return item?.type === 'display' && DETACHED_DISPLAY_CONTROLS.includes(getItemControl(item));
     }
 
+    // Display-item text controls shown beside a question's answer area
+    // rather than as their own paragraph: 'prompt' "below or within the
+    // answer-entry area", 'unit' "adjacent to the answer space", 'lower' and
+    // 'upper' to the left and right of the answer choices. Under a group they
+    // render as ordinary text.
+    const ADJACENT_DISPLAY_CONTROLS = Object.freeze(['prompt', 'unit', 'lower', 'upper']);
+
+    function isAdjacentDisplay(item) {
+        return item?.type === 'display' && ADJACENT_DISPLAY_CONTROLS.includes(getItemControl(item));
+    }
+
     // The first help / legal / flyover display child of an item, by control.
     function getDisplayControls(item) {
         const controls = { help: null, legal: null, flyover: null };
@@ -3988,16 +3999,69 @@
             const controls = this.buildDisplayControls(item);
             header.append(...controls.buttons);
             this.applyFlyover(label, controls.flyover);
+            this.applyAdjacentDisplays(item, input);
 
             wrapper.appendChild(header);
             wrapper.appendChild(input);
             for (const child of item.item ?? []) {
-                if (!isDetachedDisplay(child)) {
+                if (!isDetachedDisplay(child) && !isAdjacentDisplay(child)) {
                     wrapper.appendChild(this.renderItem(child, keyPrefix));
                 }
             }
 
             return wrapper;
+        }
+
+        // A question's prompt, unit, lower and upper display children, placed
+        // in or beside its answer area.
+        applyAdjacentDisplays(item, control) {
+            const texts = {};
+            for (const child of item.item ?? []) {
+                if (isAdjacentDisplay(child)) {
+                    texts[getItemControl(child)] = texts[getItemControl(child)] ?? plainDisplayText(child);
+                }
+            }
+            const note = (kind, text) => {
+                const node = document.createElement('span');
+                node.className = 'oe-questionnaire-' + kind + ' small text-muted';
+                node.textContent = text;
+                return node;
+            };
+            const entry = control.querySelector('input:not([type="radio"]):not([type="checkbox"]):not([type="file"]), textarea');
+            if (texts.prompt) {
+                if (entry && entry.placeholder === '') {
+                    entry.placeholder = texts.prompt;
+                } else {
+                    const prompt = note('prompt', texts.prompt);
+                    prompt.classList.add('d-block');
+                    control.appendChild(prompt);
+                }
+            }
+            if (texts.unit) {
+                if (entry && entry.tagName === 'INPUT' && !entry.closest('.input-group')) {
+                    const group = document.createElement('div');
+                    group.className = 'input-group';
+                    entry.replaceWith(group);
+                    const append = document.createElement('div');
+                    append.className = 'input-group-append';
+                    const unit = document.createElement('span');
+                    unit.className = 'input-group-text oe-questionnaire-unit';
+                    unit.textContent = texts.unit;
+                    append.appendChild(unit);
+                    group.append(entry, append);
+                } else if (!entry?.closest('.input-group')) {
+                    control.appendChild(note('unit', ' ' + texts.unit));
+                }
+            }
+            if (texts.lower) {
+                control.prepend(note('lower', texts.lower));
+            }
+            if (texts.upper) {
+                control.appendChild(note('upper', texts.upper));
+            }
+            if (texts.lower || texts.upper) {
+                control.classList.add('oe-questionnaire-scale');
+            }
         }
 
         // Group card header. Help / legal buttons sit inside the heading,
@@ -4200,7 +4264,8 @@
             const selected = answers;
             const repeats = item.repeats === true;
             const useCheckboxes = repeats || control === 'check-box';
-            const useRadios = !useCheckboxes && (control === 'radio-button' || (control !== 'drop-down' && options.length <= 6));
+            // spinner ("a list of ... ordered values scrolled through via arrows") is a drop-down here.
+            const useRadios = !useCheckboxes && (control === 'radio-button' || (control !== 'drop-down' && control !== 'spinner' && options.length <= 6));
 
             const orientation = getChoiceOrientation(item);
             if (useCheckboxes || useRadios) {
