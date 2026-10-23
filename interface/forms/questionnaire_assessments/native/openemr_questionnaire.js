@@ -4706,8 +4706,17 @@
             return result;
         }
 
-        getQuestionnaireResponse() {
+        // { complete: true } is for a host saving a response that passed
+        // validate(): R4's completed ("the current content is regarded as
+        // definitive"), or amended when the loaded response was already
+        // completed or amended. Without it the status stays as loaded, or
+        // in-progress for a new response.
+        getQuestionnaireResponse({ complete = false } = {}) {
             const response = this.responseStore.buildQuestionnaireResponse((linkId) => this.isEnabled(linkId));
+            if (complete) {
+                const loaded = this.questionnaireResponse?.status;
+                response.status = loaded === 'completed' || loaded === 'amended' ? 'amended' : 'completed';
+            }
             this.applyResponseMetadata(response);
             return response;
         }
