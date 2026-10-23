@@ -63,6 +63,8 @@
         maxValue: '{0} must be at most {1}',
         maxDecimalPlaces: '{0} allows at most {1} decimal places',
         moreInfo: 'More information',
+        referenceTo: 'Reference to {0} (e.g. {1}/123)',
+        referenceType: '{0} must refer to {1}',
         expand: 'Expand',
         collapse: 'Collapse',
     });
@@ -152,7 +154,19 @@
         COLUMN_COUNT: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-columnCount',
         SLIDER_STEP_VALUE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-sliderStepValue',
         SUPPORT_HYPERLINK: 'http://hl7.org/fhir/StructureDefinition/questionnaire-supportHyperlink',
+        USAGE_MODE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-usageMode',
+        UNIT_VALUE_SET: 'http://hl7.org/fhir/StructureDefinition/questionnaire-unitValueSet',
+        REFERENCE_RESOURCE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-referenceResource',
+        TARGET_CONSTRAINT: 'http://hl7.org/fhir/StructureDefinition/targetConstraint',
+        MIN_QUANTITY: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-minQuantity',
+        MAX_QUANTITY: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-maxQuantity',
+        CQF_EXPRESSION: 'http://hl7.org/fhir/StructureDefinition/cqf-expression',
+        ANSWER_EXPRESSION: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-answerExpression',
+        ANSWER_OPTIONS_TOGGLE: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-answerOptionsToggleExpression',
     });
+
+    // cqf-expression on the item elements the runtime evaluates (_required, _readOnly, _text).
+    const DYNAMIC_ELEMENTS = Object.freeze(['required', 'readOnly', 'text']);
 
     // Extensions SDC 4.0.0's Advanced Rendering and Advanced Behavior
     // profiles list that this runtime doesn't act on. Those that change what
@@ -162,19 +176,12 @@
     const SDC_BASE = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/';
     const CORE_BASE = 'http://hl7.org/fhir/StructureDefinition/';
     const UNSUPPORTED_BEHAVIOR_EXTENSIONS = Object.freeze([
-        SDC_BASE + 'sdc-questionnaire-answerExpression',
-        SDC_BASE + 'sdc-questionnaire-answerOptionsToggleExpression',
         SDC_BASE + 'sdc-questionnaire-candidateExpression',
         SDC_BASE + 'sdc-questionnaire-lookupQuestionnaire',
-        SDC_BASE + 'sdc-questionnaire-minQuantity',
-        SDC_BASE + 'sdc-questionnaire-maxQuantity',
         SDC_BASE + 'sdc-questionnaire-subQuestionnaire',
         CORE_BASE + 'cqf-expression',
         CORE_BASE + 'questionnaire-signatureRequired',
-        CORE_BASE + 'questionnaire-unitValueSet',
-        CORE_BASE + 'questionnaire-referenceResource',
         CORE_BASE + 'questionnaire-referenceProfile',
-        CORE_BASE + 'targetConstraint',
     ]);
     const UNSUPPORTED_PRESENTATION_EXTENSIONS = Object.freeze([
         SDC_BASE + 'sdc-questionnaire-choiceColumn',
@@ -182,7 +189,6 @@
         SDC_BASE + 'sdc-questionnaire-keyboard',
         SDC_BASE + 'sdc-questionnaire-entryMode',
         SDC_BASE + 'sdc-questionnaire-shortText',
-        CORE_BASE + 'questionnaire-usageMode',
         CORE_BASE + 'rendering-style',
     ]);
 
@@ -516,17 +522,66 @@
         return value === 'horizontal' ? 'horizontal' : 'vertical';
     }
 
+    // questionnaire-constraint (R4) and targetConstraint (its successor in
+    // SDC 4.0.0, whose expression is an Expression rather than a string).
     function getConstraints(item) {
-        return findExtensions(item, EXTENSIONS.CONSTRAINT).map((extension) => {
+        return [...findExtensions(item, EXTENSIONS.CONSTRAINT), ...findExtensions(item, EXTENSIONS.TARGET_CONSTRAINT)].map((extension) => {
             const parts = extension?.extension ?? [];
             const read = (url) => extensionValueX(parts.find((part) => part?.url === url));
+            const expression = read('expression');
             return {
                 key: read('key'),
                 severity: read('severity') ?? 'error',
                 human: read('human') ?? 'Value does not satisfy a constraint',
-                expression: read('expression'),
+                expression: expression !== null && typeof expression === 'object'
+                    ? (expression.language === 'text/fhirpath' ? expression.expression : undefined)
+                    : expression,
             };
         }).filter((constraint) => typeof constraint.expression === 'string' && constraint.expression !== '');
+    }
+
+    // An item element's own expression (cqf-expression on _required, ...).
+    function elementExpression(item, element) {
+        const expression = (item?.['_' + element]?.extension ?? []).find((extension) => extension?.url === EXTENSIONS.CQF_EXPRESSION)?.valueExpression;
+        return expression && typeof expression === 'object' ? expression : null;
+    }
+
+    // answerOptionsToggleExpression: the options it names are available only while its expression is true.
+    function getOptionToggles(item) {
+        return findExtensions(item, EXTENSIONS.ANSWER_OPTIONS_TOGGLE).map((extension) => {
+            const parts = extension?.extension ?? [];
+            return {
+                options: parts.filter((part) => part?.url === 'option').map(extensionValueX).filter((value) => value !== undefined),
+                expression: parts.find((part) => part?.url === 'expression')?.valueExpression ?? null,
+            };
+        }).filter((toggle) => toggle.expression && toggle.options.length > 0);
+    }
+
+    // answerExpression results as answerOptions.
+    function valuesToAnswerOptions(values, item) {
+        return asCollection(values).map((value) => {
+            if (value !== null && typeof value === 'object') {
+                return 'reference' in value ? { valueReference: value } : { valueCoding: value };
+            }
+            if (typeof value === 'number') {
+                return Number.isInteger(value) ? { valueInteger: value } : { valueString: String(value) };
+            }
+            if (typeof value === 'string' && (item.type === 'date' || item.type === 'time')) {
+                return item.type === 'date' ? { valueDate: value } : { valueTime: value };
+            }
+            return { valueString: String(value) };
+        });
+    }
+
+    // usageMode display / display-non-empty: shown when reviewing a form, not while filling it.
+    function isDisplayOnly(item) {
+        return ['display', 'display-non-empty'].includes(getStringExtension(item, EXTENSIONS.USAGE_MODE));
+    }
+
+    function referenceTypes(item) {
+        return findExtensions(item, EXTENSIONS.REFERENCE_RESOURCE)
+            .map((extension) => extension?.valueCode)
+            .filter((code) => typeof code === 'string' && code !== '');
     }
 
     function getAnswerOptionValue(answerOption) {
@@ -842,11 +897,16 @@
                         parentLinkId,
                         depth,
                         itemControl: getItemControl(item),
-                        hidden: isHiddenItem(item),
+                        hidden: isHiddenItem(item) || isDisplayOnly(item),
                         calculatedExpression: findExtension(item, EXTENSIONS.CALCULATED_EXPRESSION)?.valueExpression ?? null,
                         initialExpression: findExtension(item, EXTENSIONS.INITIAL_EXPRESSION)?.valueExpression ?? null,
                         enableWhenExpression: findExtension(item, EXTENSIONS.ENABLE_WHEN_EXPRESSION)?.valueExpression ?? null,
                         constraints: getConstraints(item),
+                        requiredExpression: elementExpression(item, 'required'),
+                        readOnlyExpression: elementExpression(item, 'readOnly'),
+                        textExpression: elementExpression(item, 'text'),
+                        answerExpression: findExtension(item, EXTENSIONS.ANSWER_EXPRESSION)?.valueExpression ?? null,
+                        optionToggles: getOptionToggles(item),
                         variables: findExtensions(item, EXTENSIONS.VARIABLE)
                             .map((extension) => extension?.valueExpression)
                             .filter((expression) => expression && typeof expression.name === 'string'),
@@ -869,6 +929,11 @@
                         || compiledItem.enableWhenExpression
                         || compiledItem.constraints.length > 0
                         || compiledItem.variables.length > 0
+                        || compiledItem.requiredExpression
+                        || compiledItem.readOnlyExpression
+                        || compiledItem.textExpression
+                        || compiledItem.answerExpression
+                        || compiledItem.optionToggles.length > 0
                     ) {
                         compiled.expressionItems.push(compiledItem);
                     }
@@ -985,7 +1050,7 @@
         // presenting the instance"). Other spec extensions it doesn't act on
         // are reported once each, with the first item that carries them.
         checkExtensions(questionnaire, compiled) {
-            const supported = new Set([...Object.values(EXTENSIONS), RENDERING_MARKDOWN, CORE_BASE + 'rendering-xhtml']);
+            const supported = new Set([...Object.values(EXTENSIONS).filter((url) => url !== EXTENSIONS.CQF_EXPRESSION), RENDERING_MARKDOWN, CORE_BASE + 'rendering-xhtml']);
             const critical = [...(questionnaire.extension ?? []), ...(questionnaire.modifierExtension ?? [])]
                 .filter((extension) => extension?.url === EXTENSIONS.CRITICAL_EXTENSION)
                 .map((extension) => extension.valueCanonical ?? extension.valueUri ?? extension.valueUrl)
@@ -1000,9 +1065,10 @@
             }
 
             const firstUse = new Map();
-            const visit = (node, linkId) => {
+            const evaluatedElements = DYNAMIC_ELEMENTS.map((element) => '_' + element);
+            const visit = (node, linkId, key = '') => {
                 if (Array.isArray(node)) {
-                    node.forEach((child) => visit(child, linkId));
+                    node.forEach((child) => visit(child, linkId, key));
                     return;
                 }
                 if (node === null || typeof node !== 'object') {
@@ -1010,13 +1076,14 @@
                 }
                 const here = typeof node.linkId === 'string' ? node.linkId : linkId;
                 for (const extension of [...(node.extension ?? []), ...(node.modifierExtension ?? [])]) {
-                    if (typeof extension?.url === 'string' && !firstUse.has(extension.url)) {
+                    const evaluated = extension?.url === EXTENSIONS.CQF_EXPRESSION && evaluatedElements.includes(key);
+                    if (typeof extension?.url === 'string' && !evaluated && !firstUse.has(extension.url)) {
                         firstUse.set(extension.url, here);
                     }
                 }
-                for (const [key, value] of Object.entries(node)) {
-                    if (key !== 'contained' && value !== null && typeof value === 'object') {
-                        visit(value, here);
+                for (const [childKey, value] of Object.entries(node)) {
+                    if (childKey !== 'contained' && value !== null && typeof value === 'object') {
+                        visit(value, here, childKey);
                     }
                 }
             };
@@ -2294,6 +2361,11 @@
                     compiledItem.calculatedExpression,
                     compiledItem.initialExpression,
                     compiledItem.enableWhenExpression,
+                    compiledItem.requiredExpression,
+                    compiledItem.readOnlyExpression,
+                    compiledItem.textExpression,
+                    compiledItem.answerExpression,
+                    ...compiledItem.optionToggles.map((toggle) => toggle.expression),
                     ...compiledItem.constraints.map((constraint) => ({
                         language: 'text/fhirpath',
                         expression: constraint.expression,
@@ -2420,6 +2492,58 @@
                 });
                 return null;
             }
+        }
+
+        evaluateFor(runtime, compiledItem, expression) {
+            const ast = expression && this.compiledExpressions.get(expression);
+            if (!ast) {
+                return null;
+            }
+            try {
+                return this.evaluator.evaluate(ast, this.buildEnvironment(runtime, compiledItem), null);
+            } catch (error) {
+                this.warnings.push({
+                    code: 'fhirpath-evaluate-error',
+                    linkId: compiledItem.linkId,
+                    expression: expression.expression,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+                return null;
+            }
+        }
+
+        // Required, read-only and text by expression, answers by
+        // answerExpression, and which options answerOptionsToggleExpression
+        // turns off, for each item that has them. Evaluated against the
+        // whole response, as for an item outside any repeat.
+        evaluateDynamic(runtime) {
+            const state = new Map();
+            for (const compiledItem of this.compiled.expressionItems) {
+                const { requiredExpression, readOnlyExpression, textExpression, answerExpression, optionToggles } = compiledItem;
+                if (!requiredExpression && !readOnlyExpression && !textExpression && !answerExpression && optionToggles.length === 0) {
+                    continue;
+                }
+                const boolean = (expression) => {
+                    const result = expression ? this.evaluateFor(runtime, compiledItem, expression) : null;
+                    return result === null || result.length === 0 ? null : collectionBoolean(result);
+                };
+                const text = textExpression ? this.evaluateFor(runtime, compiledItem, textExpression) : null;
+                const answers = answerExpression ? this.evaluateFor(runtime, compiledItem, answerExpression) : null;
+                const offOptions = [];
+                for (const toggle of optionToggles) {
+                    if (boolean(toggle.expression) !== true) {
+                        offOptions.push(...toggle.options);
+                    }
+                }
+                state.set(compiledItem.linkId, {
+                    required: boolean(requiredExpression),
+                    readOnly: boolean(readOnlyExpression),
+                    text: text !== null && text.length > 0 ? String(text[0]) : null,
+                    answerOptions: answers === null ? null : valuesToAnswerOptions(answers, compiledItem.item),
+                    offOptions,
+                });
+            }
+            return state;
         }
 
         evaluateConstraints(runtime, compiledItem) {
@@ -2887,7 +3011,7 @@
 
             const minOccurs = getIntegerExtension(item, EXTENSIONS.MIN_OCCURS);
             const maxOccurs = getIntegerExtension(item, EXTENSIONS.MAX_OCCURS);
-            const requiredCount = minOccurs !== null ? minOccurs : (item.required === true ? 1 : 0);
+            const requiredCount = minOccurs !== null ? minOccurs : (this.runtime.isRequired(compiledItem.linkId, item) ? 1 : 0);
             if (requiredCount > 0 && answers.length < requiredCount) {
                 add('error', minOccurs !== null ? 'min-occurs' : 'required',
                     requiredCount === 1 ? this.runtime.t('requiresValue', label) : this.runtime.t('requiresAtLeast', label, requiredCount));
@@ -2921,6 +3045,36 @@
                     }
                     if (typeof maxSize === 'number' && Number.isFinite(attachment.size) && attachment.size > maxSize) {
                         add('error', 'max-size', this.runtime.t('maxSize', label, maxSize));
+                    }
+                }
+            }
+            const types = referenceTypes(item);
+            if (item.type === 'reference' && types.length > 0) {
+                for (const answer of answers) {
+                    const reference = String(answer.value?.reference ?? '');
+                    if (reference !== '' && !types.some((type) => reference.startsWith(type + '/') || reference.includes('/' + type + '/'))) {
+                        add('error', 'reference-type', this.runtime.t('referenceType', label, types.join(', ')));
+                    }
+                }
+            }
+            if (item.type === 'quantity') {
+                const bounds = [
+                    [EXTENSIONS.MIN_QUANTITY, 'min-quantity', 'minValue', (value, bound) => value < bound],
+                    [EXTENSIONS.MAX_QUANTITY, 'max-quantity', 'maxValue', (value, bound) => value > bound],
+                ];
+                for (const [url, code, key, outside] of bounds) {
+                    const bound = getTypedExtensionValue(item, url);
+                    if (!bound || typeof bound.value !== 'number') {
+                        continue;
+                    }
+                    // Only an answer in the bound's unit is compared; no unit conversion here.
+                    const boundUnit = bound.code ?? bound.unit ?? '';
+                    for (const answer of answers) {
+                        const quantity = answer.value ?? {};
+                        const unit = quantity.code ?? quantity.unit ?? '';
+                        if (typeof quantity.value === 'number' && (boundUnit === '' || unit === boundUnit) && outside(quantity.value, bound.value)) {
+                            add('error', code, this.runtime.t(key, label, (bound.value + ' ' + (bound.unit ?? bound.code ?? '')).trim()));
+                        }
                     }
                 }
             }
@@ -3716,6 +3870,7 @@
             this.runtime = runtime;
             this.nodes = new Map();
             this.inputs = new Map();
+            this.dynamicRendered = new Map();
             this.container = null;
             this.popup = null;
             this.popupSequence = 0;
@@ -4075,23 +4230,7 @@
             const inputId = safeId(storageKey);
             label.id = inputId + '-label';
             const input = this.renderInput(item, storageKey);
-            const single = input.querySelector('#' + inputId);
-            if (single) {
-                label.htmlFor = inputId;
-                if (item.required === true) {
-                    single.setAttribute('aria-required', 'true');
-                }
-            } else if (input.querySelector('input[type="radio"], input[type="checkbox"]')) {
-                // Answers as radios or checkboxes are one group named by the
-                // question, so assistive technology reads the question with
-                // each answer (WCAG 1.3.1, 4.1.2).
-                const radios = input.querySelector('input[type="checkbox"]') === null;
-                input.setAttribute('role', radios ? 'radiogroup' : 'group');
-                input.setAttribute('aria-labelledby', label.id);
-                if (item.required === true && radios) {
-                    input.setAttribute('aria-required', 'true');
-                }
-            }
+            this.connectLabel(item, label, input, inputId, item.required === true);
 
             const controls = this.buildDisplayControls(item);
             header.append(...controls.buttons, ...this.supportLinks(item));
@@ -4111,6 +4250,96 @@
             }
 
             return wrapper;
+        }
+
+        // Ties a question's label to its answer area: <label for> a single
+        // entry, or a radiogroup / group named by the question for radios and
+        // checkboxes, so assistive technology reads the question with each
+        // answer (WCAG 1.3.1, 4.1.2); aria-required when it is required.
+        connectLabel(item, label, input, inputId, required) {
+            const single = input.querySelector('#' + inputId);
+            if (single) {
+                label.htmlFor = inputId;
+                if (required) {
+                    single.setAttribute('aria-required', 'true');
+                }
+            } else if (input.querySelector('input[type="radio"], input[type="checkbox"]')) {
+                const radios = input.querySelector('input[type="checkbox"]') === null;
+                input.setAttribute('role', radios ? 'radiogroup' : 'group');
+                input.setAttribute('aria-labelledby', label.id);
+                if (required && radios) {
+                    input.setAttribute('aria-required', 'true');
+                }
+            }
+        }
+
+        // The expression-driven parts of the questions that have them:
+        // text, required, read-only, the answer list (answerExpression,
+        // rebuilt when it changes) and options turned off by
+        // answerOptionsToggleExpression.
+        applyDynamicState() {
+            for (const [linkId, state] of this.runtime.dynamicState ?? []) {
+                const node = this.nodes.get(linkId);
+                const compiledItem = this.runtime.compiled.itemsByLinkId.get(linkId);
+                if (!node || !compiledItem || !node.classList.contains('oe-questionnaire-question')) {
+                    continue;
+                }
+                const item = compiledItem.item;
+                const label = node.querySelector(':scope > .oe-questionnaire-label-row > .oe-questionnaire-label');
+                let control = node.querySelector(':scope > .oe-questionnaire-control');
+                if (state.answerOptions !== null && control) {
+                    const signature = JSON.stringify(state.answerOptions);
+                    if (this.dynamicRendered.has(linkId) && this.dynamicRendered.get(linkId) !== signature) {
+                        const fresh = this.renderInput(item, linkId);
+                        control.replaceWith(fresh);
+                        control = fresh;
+                        this.connectLabel(item, label, fresh, safeId(linkId), this.runtime.isRequired(linkId, item));
+                    }
+                    this.dynamicRendered.set(linkId, signature);
+                }
+                if (label && state.text !== null && label.firstChild?.nodeType === Node.TEXT_NODE) {
+                    label.firstChild.textContent = [item.prefix, state.text].filter(Boolean).join(item.prefix ? ' — ' : '');
+                }
+                if (label && state.required !== null) {
+                    let mark = label.querySelector(':scope > .text-danger');
+                    if (state.required && !mark) {
+                        mark = document.createElement('span');
+                        mark.className = 'text-danger ml-1';
+                        mark.textContent = '*';
+                        mark.setAttribute('aria-hidden', 'true');
+                        label.appendChild(mark);
+                    } else if (!state.required && mark) {
+                        mark.remove();
+                    }
+                    const target = control?.querySelector('#' + safeId(linkId)) ?? (control?.getAttribute('role') === 'radiogroup' ? control : null);
+                    if (target) {
+                        if (state.required) {
+                            target.setAttribute('aria-required', 'true');
+                        } else {
+                            target.removeAttribute('aria-required');
+                        }
+                    }
+                }
+                if (control && state.readOnly !== null) {
+                    for (const field of control.querySelectorAll('input, select, textarea, button')) {
+                        field.disabled = state.readOnly;
+                    }
+                }
+                if (control && compiledItem.optionToggles.length > 0) {
+                    // Re-applied on every change, so an option comes back when its expression turns true.
+                    const options = this.runtime.answerOptionsFor(item);
+                    const off = (index) => {
+                        const value = getAnswerOptionValue(options[index]);
+                        return value !== null && state.offOptions.some((candidate) => equalPrimitive(candidate, value.value));
+                    };
+                    const readOnly = state.readOnly ?? item.readOnly === true;
+                    for (const field of control.querySelectorAll('input[type="radio"], input[type="checkbox"], option')) {
+                        if (field.value !== '') {
+                            field.disabled = (field.tagName !== 'OPTION' && readOnly) || off(Number(field.value));
+                        }
+                    }
+                }
+            }
         }
 
         // A question's prompt, unit, lower and upper display children, placed
@@ -4335,7 +4564,7 @@
             const inputId = safeId(storageKey);
 
             if (OPTION_CAPABLE_TYPES.includes(item.type)
-                && resolveAnswerOptions(item, this.runtime.questionnaire).some((option) => getAnswerOptionValue(option) !== null)) {
+                && this.runtime.answerOptionsFor(item).some((option) => getAnswerOptionValue(option) !== null)) {
                 const openText = (item.type === 'string' || item.type === 'text') && allowsFreeTextAnswer(item);
                 return this.renderChoice(item, container, control, answers, inputId, openText, storageKey);
             }
@@ -4383,7 +4612,7 @@
         }
 
         renderChoice(item, container, control, answers, inputId, allowOpenChoice, storageKey = item.linkId) {
-            const options = resolveAnswerOptions(item, this.runtime.questionnaire);
+            const options = this.runtime.answerOptionsFor(item);
             const selected = answers;
             const repeats = item.repeats === true;
             const useCheckboxes = repeats || control === 'check-box';
@@ -4754,9 +4983,11 @@
             // questionnaire-unitOption lists the allowed units (Codings). Closed
             // by default -> a select; sdc-questionnaire-unitOpen
             // optionsOrString / optionsOrType -> free text with suggestions.
-            const unitOptions = findExtensions(item, EXTENSIONS.UNIT_OPTION)
-                .map((extension) => extension?.valueCoding)
-                .filter((coding) => coding && (typeof coding.code === 'string' || typeof coding.display === 'string'));
+            const unitValueSet = containedResourceById(this.runtime.questionnaire, getTypedExtensionValue(item, EXTENSIONS.UNIT_VALUE_SET));
+            const unitOptions = [
+                ...findExtensions(item, EXTENSIONS.UNIT_OPTION).map((extension) => extension?.valueCoding),
+                ...(unitValueSet?.resourceType === 'ValueSet' ? expansionToAnswerOptions(unitValueSet).map((option) => option.valueCoding) : []),
+            ].filter((coding) => coding && (typeof coding.code === 'string' || typeof coding.display === 'string'));
             const unitLabel = (coding) => coding.display ?? coding.code;
             const unitOpen = ['optionsOrString', 'optionsOrType'].includes(getStringExtension(item, EXTENSIONS.UNIT_OPEN));
             const currentUnit = quantity.unit ?? quantity.code ?? '';
@@ -4849,7 +5080,9 @@
             input.type = 'text';
             input.id = inputId;
             input.className = 'form-control';
-            input.placeholder = getEntryFormat(item) || this.runtime.t('referencePlaceholder');
+            const types = referenceTypes(item);
+            input.placeholder = getEntryFormat(item)
+                || (types.length > 0 ? this.runtime.t('referenceTo', types.join(', '), types[0]) : this.runtime.t('referencePlaceholder'));
             input.value = firstValue(answers)?.value?.reference ?? '';
             input.disabled = item.readOnly === true;
             input.addEventListener('change', () => {
@@ -5035,6 +5268,7 @@
                 const hidden = compiledItem?.hidden === true;
                 node.classList.toggle('d-none', !this.runtime.isEnabled(storageKey) || hidden);
             }
+            this.applyDynamicState();
             this.refreshCalculatedValues();
             this.renderWarnings(this.runtime.collectWarnings());
             this.clearValidationState();
@@ -5191,7 +5425,20 @@
                 this.expressionEngine.seedInitialExpressionInstances(this);
             }
             this.expressionEngine.recalculate(this);
+            this.dynamicState = this.expressionEngine.evaluateDynamic(this);
             this.behaviorEngine.evaluateAll();
+        }
+
+        // Required as the item's requiredExpression says, else as item.required.
+        isRequired(linkId, item) {
+            const dynamic = this.dynamicState?.get(linkId)?.required;
+            return dynamic === null || dynamic === undefined ? item?.required === true : dynamic;
+        }
+
+        // The item's answer options: answerExpression's when it has one, else its own.
+        answerOptionsFor(item) {
+            const dynamic = this.dynamicState?.get(item.linkId)?.answerOptions;
+            return Array.isArray(dynamic) ? dynamic : resolveAnswerOptions(item, this.questionnaire);
         }
 
         isEnabled(linkId) {

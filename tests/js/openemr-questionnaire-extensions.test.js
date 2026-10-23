@@ -44,12 +44,12 @@ beforeEach(() => {
 describe('rendering-criticalExtension', () => {
     test('a critical extension the runtime lacks stops the form, and says why', () => {
         const { container, runtime } = setup({
-            modifierExtension: [critical(SDC + 'sdc-questionnaire-answerExpression')],
+            modifierExtension: [critical(SDC + 'sdc-questionnaire-lookupQuestionnaire')],
             item: [{ linkId: 'q', type: 'string', text: 'Q' }],
         });
         expect(container.querySelector('[data-link-id="q"]')).toBeNull();
         expect(codes(runtime, 'critical-extension-unsupported')).toHaveLength(1);
-        expect(container.querySelector('.oe-questionnaire-warnings').textContent).toContain('sdc-questionnaire-answerExpression');
+        expect(container.querySelector('.oe-questionnaire-warnings').textContent).toContain('sdc-questionnaire-lookupQuestionnaire');
     });
 
     test('a critical extension it supports renders as usual', () => {
@@ -76,11 +76,11 @@ describe('extensions not acted on', () => {
         expect(warnings[0]).toMatchObject({ linkId: 'a', severity: 'warning' });
     });
 
-    test('a presentation-only one is a console note, and a required expression is found under _required', () => {
+    test('a presentation-only one is a console note, and a repeats expression is found under _repeats', () => {
         const { runtime } = setup({
             item: [
                 { linkId: 'a', type: 'string', text: 'A', extension: [{ url: SDC + 'sdc-questionnaire-width', valueQuantity: { value: 50, unit: '%' } }] },
-                { linkId: 'b', type: 'string', text: 'B', _required: { extension: [{ url: CORE + 'cqf-expression', valueExpression: { language: 'text/fhirpath', expression: 'true' } }] } },
+                { linkId: 'b', type: 'string', text: 'B', _repeats: { extension: [{ url: CORE + 'cqf-expression', valueExpression: { language: 'text/fhirpath', expression: 'true' } }] } },
             ],
         });
         const bySeverity = Object.fromEntries(codes(runtime, 'extension-unsupported').map((warning) => [warning.linkId, warning.severity]));

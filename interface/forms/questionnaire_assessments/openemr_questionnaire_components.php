@@ -59,6 +59,8 @@ $questionnaireStrings = [
     'maxValue' => xl('{0} must be at most {1}'),
     'maxDecimalPlaces' => xl('{0} allows at most {1} decimal places'),
     'moreInfo' => xl('More information'),
+    'referenceTo' => xl('Reference to {0} (e.g. {1}/123)'),
+    'referenceType' => xl('{0} must refer to {1}'),
     'expand' => xl('Expand'),
     'collapse' => xl('Collapse'),
 ];
