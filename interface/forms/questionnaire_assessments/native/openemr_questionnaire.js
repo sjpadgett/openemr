@@ -67,6 +67,7 @@
     const EXTENSIONS = Object.freeze({
         ITEM_CONTROL: 'http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl',
         ORDINAL_VALUE: 'http://hl7.org/fhir/StructureDefinition/ordinalValue',
+        ITEM_WEIGHT: 'http://hl7.org/fhir/StructureDefinition/itemWeight',
         QUESTIONNAIRE_UNIT: 'http://hl7.org/fhir/StructureDefinition/questionnaire-unit',
         VARIABLE: 'http://hl7.org/fhir/StructureDefinition/variable',
         CALCULATED_EXPRESSION: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-calculatedExpression',
@@ -245,9 +246,12 @@
     }
 
     function getOrdinalValue(node) {
-        // ordinalValue may sit on the answerOption itself or inside its Coding
-        // (the latter when the option came from a ValueSet expansion entry).
-        const extension = findExtension(node, EXTENSIONS.ORDINAL_VALUE)
+        // itemWeight (which replaces the deprecated ordinalValue) or
+        // ordinalValue, on the answerOption itself or inside its Coding (the
+        // latter when the option came from a ValueSet expansion entry).
+        const extension = findExtension(node, EXTENSIONS.ITEM_WEIGHT)
+            ?? findExtension(node?.valueCoding, EXTENSIONS.ITEM_WEIGHT)
+            ?? findExtension(node, EXTENSIONS.ORDINAL_VALUE)
             ?? findExtension(node?.valueCoding, EXTENSIONS.ORDINAL_VALUE);
         const value = extension?.valueDecimal ?? extension?.valueInteger;
         return typeof value === 'number' ? value : null;
@@ -496,6 +500,134 @@
         const fractionalSeconds = fraction ? '.' + fraction : '';
 
         return `${year}-${month}-${day}T${hour}:${minute}:${second}${fractionalSeconds}${offsetSign}${offsetHours}:${offsetRemainder}`;
+    }
+
+    // FHIRPath calendar durations (singular and plural) and the UCUM units
+    // that date arithmetic accepts in their place, by the field they move.
+    const CALENDAR_UNITS = Object.freeze({
+        year: 'year', years: 'year', month: 'month', months: 'month', week: 'week', weeks: 'week',
+        day: 'day', days: 'day', hour: 'hour', hours: 'hour', minute: 'minute', minutes: 'minute',
+        second: 'second', seconds: 'second',
+    });
+    const UCUM_CALENDAR_UNITS = Object.freeze({ a: 'year', mo: 'month', wk: 'week', d: 'day', h: 'hour', min: 'minute', s: 'second' });
+    const FHIR_DATE_PATTERN = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?(?:T(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+    function fhirToday(now = new Date()) {
+        return now.getFullYear() + '-' + padDateTimePart(now.getMonth() + 1) + '-' + padDateTimePart(now.getDate());
+    }
+
+    function fhirNow(now = new Date()) {
+        return toFhirDateTime(fhirToday(now) + 'T' + padDateTimePart(now.getHours()) + ':'
+            + padDateTimePart(now.getMinutes()) + ':' + padDateTimePart(now.getSeconds()));
+    }
+
+    // A FHIR date or dateTime moved by a calendar duration, kept at its own
+    // precision. A month or year past the end of a shorter month lands on its
+    // last day (2026-01-31 + 1 month = 2026-02-28). A unit finer than the
+    // value's precision gives null, as does anything that isn't a date.
+    function shiftFhirDate(value, quantity, sign) {
+        const match = typeof value === 'string' ? FHIR_DATE_PATTERN.exec(value) : null;
+        const unit = CALENDAR_UNITS[String(quantity?.unit ?? '').toLowerCase()] ?? UCUM_CALENDAR_UNITS[quantity?.unit] ?? null;
+        const amount = sign * Math.trunc(Number(quantity?.value));
+        if (!match || unit === null || !Number.isFinite(amount)) {
+            return null;
+        }
+        const [, year, month, day, hour, minute, second, fraction = '', zone = ''] = match;
+        const precision = hour !== undefined ? 'time' : (day !== undefined ? 'day' : (month !== undefined ? 'month' : 'year'));
+        const finest = { year: ['year'], month: ['year', 'month'], day: ['year', 'month', 'week', 'day'] }[precision];
+        if (finest !== undefined && !finest.includes(unit)) {
+            return null;
+        }
+        let date;
+        if (unit === 'year' || unit === 'month') {
+            const months = Number(year) * 12 + (month !== undefined ? Number(month) - 1 : 0) + (unit === 'year' ? 12 * amount : amount);
+            const newYear = Math.floor(months / 12);
+            const newMonth = ((months % 12) + 12) % 12;
+            const lastDay = new Date(Date.UTC(newYear, newMonth + 1, 0)).getUTCDate();
+            date = new Date(Date.UTC(newYear, newMonth, Math.min(day !== undefined ? Number(day) : 1, lastDay),
+                Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0)));
+        } else {
+            date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0)));
+            const milliseconds = { week: 604800000, day: 86400000, hour: 3600000, minute: 60000, second: 1000 }[unit];
+            date = new Date(date.getTime() + amount * milliseconds);
+        }
+        const yearText = String(date.getUTCFullYear()).padStart(4, '0');
+        const monthText = padDateTimePart(date.getUTCMonth() + 1);
+        const dayText = padDateTimePart(date.getUTCDate());
+        if (precision === 'year') return yearText;
+        if (precision === 'month') return yearText + '-' + monthText;
+        if (precision === 'day') return yearText + '-' + monthText + '-' + dayText;
+        return yearText + '-' + monthText + '-' + dayText + 'T' + padDateTimePart(date.getUTCHours()) + ':' + padDateTimePart(date.getUTCMinutes())
+            + (second !== undefined ? ':' + padDateTimePart(date.getUTCSeconds()) + fraction : '') + zone;
+    }
+
+    // FHIRPath's type test (is, as, ofType) over the plain JSON the runtime
+    // evaluates. Dates are JSON strings, so a string that reads as a date,
+    // dateTime or time counts as that type rather than as a string.
+    const FHIR_TIME_PATTERN = /^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+    function fhirPathTypeMatches(value, typeName) {
+        const name = String(typeName).toLowerCase();
+        const isDateLike = typeof value === 'string' && (FHIR_DATE_PATTERN.test(value) || FHIR_TIME_PATTERN.test(value));
+        switch (name) {
+            case 'boolean':
+                return typeof value === 'boolean';
+            case 'integer':
+                return typeof value === 'number' && Number.isInteger(value);
+            case 'decimal':
+                return typeof value === 'number';
+            case 'string':
+            case 'code':
+            case 'uri':
+            case 'url':
+            case 'canonical':
+            case 'id':
+            case 'markdown':
+                return typeof value === 'string' && !isDateLike;
+            case 'date':
+                return typeof value === 'string' && FHIR_DATE_PATTERN.test(value) && !value.includes('T');
+            case 'datetime':
+                return typeof value === 'string' && FHIR_DATE_PATTERN.test(value);
+            case 'time':
+                return typeof value === 'string' && FHIR_TIME_PATTERN.test(value);
+            case 'coding':
+                return value !== null && typeof value === 'object' && ('code' in value || 'system' in value) && !('value' in value);
+            case 'quantity':
+                return value !== null && typeof value === 'object' && typeof value.value === 'number';
+            case 'reference':
+                return value !== null && typeof value === 'object' && typeof value.reference === 'string';
+            case 'attachment':
+                return value !== null && typeof value === 'object' && ('contentType' in value || 'data' in value || 'url' in value) && !('reference' in value);
+            default:
+                return value !== null && typeof value === 'object' && value.resourceType === typeName;
+        }
+    }
+
+    // A Coding's weight (SDC weight(), formerly ordinal()): its own itemWeight
+    // or ordinalValue, else that of the answerOption carrying the same code
+    // anywhere in the Questionnaire.
+    function codingWeight(coding, questionnaire) {
+        const own = getOrdinalValue({ valueCoding: coding });
+        if (own !== null) {
+            return own;
+        }
+        const visit = (items) => {
+            for (const item of items ?? []) {
+                for (const option of item.answerOption ?? []) {
+                    if (option.valueCoding && equalPrimitive(option.valueCoding, coding)) {
+                        const weight = getOrdinalValue(option);
+                        if (weight !== null) {
+                            return weight;
+                        }
+                    }
+                }
+                const nested = visit(item.item);
+                if (nested !== null) {
+                    return nested;
+                }
+            }
+            return null;
+        };
+        return coding !== null && typeof coding === 'object' ? visit(questionnaire?.item) : null;
     }
 
     class QuestionnaireCompiler {
@@ -1024,19 +1156,32 @@
                     continue;
                 }
 
+                // Date, dateTime and time literals: @2026-10-23, @2026-10-23T10:30:00Z, @T10:30.
+                if (character === '@') {
+                    const match = /^@(?:T\d{2}(?::\d{2}(?::\d{2}(?:\.\d+)?)?)?|\d{4}(?:-\d{2}(?:-\d{2})?)?(?:T(?:\d{2}(?::\d{2}(?::\d{2}(?:\.\d+)?)?)?)?(?:Z|[+-]\d{2}:\d{2})?)?)/
+                        .exec(source.slice(index));
+                    if (!match || match[0] === '@') {
+                        throw new Error('Invalid FHIRPath date literal at position ' + index + '.');
+                    }
+                    const literal = match[0].slice(1);
+                    push('date', literal.endsWith('T') ? literal.slice(0, -1) : literal, index);
+                    index += match[0].length;
+                    continue;
+                }
+
                 const twoCharacter = source.slice(index, index + 2);
-                if (['!=', '>=', '<='].includes(twoCharacter)) {
+                if (['!=', '>=', '<=', '!~'].includes(twoCharacter)) {
                     push('operator', twoCharacter, index);
                     index += 2;
                     continue;
                 }
 
-                if (['=', '>', '<', '+', '-', '*', '/'].includes(character)) {
+                if (['=', '>', '<', '+', '-', '*', '/', '|', '&', '~'].includes(character)) {
                     push('operator', character, index++);
                     continue;
                 }
 
-                if (['%', '.', ',', '(', ')', '{', '}'].includes(character)) {
+                if (['%', '.', ',', '(', ')', '{', '}', '[', ']'].includes(character)) {
                     push(character, character, index++);
                     continue;
                 }
@@ -1057,9 +1202,38 @@
         parse(source) {
             this.tokens = this.tokenizer.tokenize(source);
             this.index = 0;
-            const expression = this.parseOr();
+            const expression = this.parseExpression();
             this.expect('eof');
             return expression;
+        }
+
+        // FHIRPath operator precedence, loosest first: implies; or, xor; and;
+        // in, contains; =, ~, !=, !~; >, <, >=, <=; |; is, as; +, -, &;
+        // *, /, div, mod; unary + and -; then invocation and indexing.
+        parseExpression() {
+            let expression = this.parseOr();
+            while (this.consumeKeyword('implies')) {
+                expression = { type: 'binary', operator: 'implies', left: expression, right: this.parseOr() };
+            }
+            return expression;
+        }
+
+        consumeOperator(values) {
+            const token = this.current();
+            if (token.type === 'operator' && values.includes(token.value)) {
+                this.index++;
+                return token.value;
+            }
+            return null;
+        }
+
+        consumeAnyKeyword(keywords) {
+            for (const keyword of keywords) {
+                if (this.consumeKeyword(keyword)) {
+                    return keyword;
+                }
+            }
+            return null;
         }
 
         current() {
@@ -1095,62 +1269,120 @@
 
         parseOr() {
             let expression = this.parseAnd();
-            while (this.consumeKeyword('or')) {
-                expression = { type: 'binary', operator: 'or', left: expression, right: this.parseAnd() };
+            let operator;
+            while ((operator = this.consumeAnyKeyword(['or', 'xor']))) {
+                expression = { type: 'binary', operator, left: expression, right: this.parseAnd() };
             }
             return expression;
         }
 
         parseAnd() {
-            let expression = this.parseComparison();
+            let expression = this.parseMembership();
             while (this.consumeKeyword('and')) {
-                expression = { type: 'binary', operator: 'and', left: expression, right: this.parseComparison() };
+                expression = { type: 'binary', operator: 'and', left: expression, right: this.parseMembership() };
+            }
+            return expression;
+        }
+
+        parseMembership() {
+            let expression = this.parseEquality();
+            let operator;
+            while ((operator = this.consumeAnyKeyword(['in', 'contains']))) {
+                expression = { type: 'binary', operator, left: expression, right: this.parseEquality() };
+            }
+            return expression;
+        }
+
+        parseEquality() {
+            let expression = this.parseComparison();
+            let operator;
+            while ((operator = this.consumeOperator(['=', '!=', '~', '!~']))) {
+                expression = { type: 'binary', operator, left: expression, right: this.parseComparison() };
             }
             return expression;
         }
 
         parseComparison() {
-            let expression = this.parseAdditive();
-            const token = this.current();
-            if (token.type === 'operator' && ['=', '!=', '>', '<', '>=', '<='].includes(token.value)) {
-                this.index++;
-                expression = { type: 'binary', operator: token.value, left: expression, right: this.parseAdditive() };
+            let expression = this.parseUnion();
+            let operator;
+            while ((operator = this.consumeOperator(['>', '<', '>=', '<=']))) {
+                expression = { type: 'binary', operator, left: expression, right: this.parseUnion() };
             }
             return expression;
         }
 
+        parseUnion() {
+            let expression = this.parseTypeOperator();
+            while (this.consumeOperator(['|'])) {
+                expression = { type: 'binary', operator: '|', left: expression, right: this.parseTypeOperator() };
+            }
+            return expression;
+        }
+
+        parseTypeOperator() {
+            let expression = this.parseAdditive();
+            let operator;
+            while ((operator = this.consumeAnyKeyword(['is', 'as']))) {
+                const typeName = this.parseTypeSpecifier();
+                expression = { type: 'typeOperator', operator, source: expression, typeName };
+            }
+            return expression;
+        }
+
+        // A type name, optionally namespaced (System.Integer, FHIR.Coding).
+        parseTypeSpecifier() {
+            let name = this.expect('identifier').value;
+            while (this.consume('.')) {
+                name = this.expect('identifier').value;
+            }
+            return name;
+        }
+
         parseAdditive() {
             let expression = this.parseMultiplicative();
-            while (this.current().type === 'operator' && ['+', '-'].includes(this.current().value)) {
-                const operator = this.current().value;
-                this.index++;
+            let operator;
+            while ((operator = this.consumeOperator(['+', '-', '&']))) {
                 expression = { type: 'binary', operator, left: expression, right: this.parseMultiplicative() };
             }
             return expression;
         }
 
         parseMultiplicative() {
-            let expression = this.parsePostfix();
-            while (this.current().type === 'operator' && ['*', '/'].includes(this.current().value)) {
-                const operator = this.current().value;
-                this.index++;
-                expression = { type: 'binary', operator, left: expression, right: this.parsePostfix() };
+            let expression = this.parseUnary();
+            let operator;
+            while ((operator = this.consumeOperator(['*', '/']) ?? this.consumeAnyKeyword(['div', 'mod']))) {
+                expression = { type: 'binary', operator, left: expression, right: this.parseUnary() };
             }
             return expression;
         }
 
+        parseUnary() {
+            const operator = this.consumeOperator(['+', '-']);
+            if (operator === '-') {
+                return { type: 'binary', operator: '*', left: { type: 'literal', value: -1 }, right: this.parseUnary() };
+            }
+            return this.parsePostfix();
+        }
+
         parsePostfix() {
             let expression = this.parsePrimary();
-            while (this.consume('.')) {
-                const name = this.expect('identifier').value;
-                if (this.consume('(')) {
-                    const args = this.parseArguments();
-                    expression = { type: 'method', name, source: expression, args };
+            for (;;) {
+                if (this.consume('.')) {
+                    const name = this.expect('identifier').value;
+                    if (this.consume('(')) {
+                        const args = this.parseArguments();
+                        expression = { type: 'method', name, source: expression, args };
+                    } else {
+                        expression = { type: 'property', name, source: expression };
+                    }
+                } else if (this.consume('[')) {
+                    const index = this.parseExpression();
+                    this.expect(']');
+                    expression = { type: 'index', source: expression, index };
                 } else {
-                    expression = { type: 'property', name, source: expression };
+                    return expression;
                 }
             }
-            return expression;
         }
 
         parsePrimary() {
@@ -1170,7 +1402,23 @@
 
             const numberToken = this.consume('number');
             if (numberToken) {
+                // A quantity literal: a number with a calendar duration (4 days)
+                // or a quoted UCUM unit (4 'mg').
+                const unitToken = this.current();
+                if (unitToken.type === 'identifier' && CALENDAR_UNITS[unitToken.value.toLowerCase()] !== undefined) {
+                    this.index++;
+                    return { type: 'literal', value: { value: numberToken.value, unit: CALENDAR_UNITS[unitToken.value.toLowerCase()] } };
+                }
+                if (unitToken.type === 'string') {
+                    this.index++;
+                    return { type: 'literal', value: { value: numberToken.value, unit: unitToken.value, code: unitToken.value } };
+                }
                 return { type: 'literal', value: numberToken.value };
+            }
+
+            const dateToken = this.consume('date');
+            if (dateToken) {
+                return { type: 'literal', value: dateToken.value };
             }
 
             if (this.consume('{')) {
@@ -1179,7 +1427,7 @@
             }
 
             if (this.consume('(')) {
-                const expression = this.parseOr();
+                const expression = this.parseExpression();
                 this.expect(')');
                 return expression;
             }
@@ -1206,7 +1454,7 @@
                 return args;
             }
             do {
-                args.push(this.parseOr());
+                args.push(this.parseExpression());
             } while (this.consume(','));
             this.expect(')');
             return args;
@@ -1243,6 +1491,21 @@
                     return this.evaluateFunction(ast, environment, context);
                 case 'binary':
                     return this.evaluateBinary(ast, environment, context);
+                case 'index': {
+                    const collection = asCollection(this.evaluate(ast.source, environment, context));
+                    const position = firstValue(this.evaluate(ast.index, environment, context));
+                    return Number.isInteger(position) && position >= 0 && position < collection.length ? [collection[position]] : [];
+                }
+                case 'typeOperator': {
+                    const collection = asCollection(this.evaluate(ast.source, environment, context));
+                    if (collection.length > 1) {
+                        throw new Error('FHIRPath "' + ast.operator + '" needs a single item, not ' + collection.length + '.');
+                    }
+                    if (ast.operator === 'is') {
+                        return collection.length === 0 ? [] : [fhirPathTypeMatches(collection[0], ast.typeName)];
+                    }
+                    return collection.filter((value) => fhirPathTypeMatches(value, ast.typeName));
+                }
                 default:
                     throw new Error('Unsupported FHIRPath AST node: ' + ast.type + '.');
             }
@@ -1390,6 +1653,223 @@
                 case 'sum':
                     return [asCollection(source).reduce((sum, value) => sum + Number(value), 0)];
                 default:
+                    return this.evaluateMoreMethods(name, ast, asCollection(source), environment, context);
+            }
+        }
+
+        // FHIRPath 2.0.0 functions beyond the scoped ones above, FHIR's
+        // extension(), and SDC's weight() (ordinal() before it).
+        evaluateMoreMethods(name, ast, collection, environment, context) {
+            const arg = (position) => this.evaluate(ast.args[position], environment, context);
+            const argValue = (position) => firstValue(arg(position));
+            const typeArgument = () => {
+                const node = ast.args[0];
+                if (node?.type === 'identifier') return node.name;
+                if (node?.type === 'property') return node.name;
+                throw new Error('FHIRPath ' + ast.name + '() needs a type name.');
+            };
+            // Functions defined on a single input: empty in, empty out; more than one is an error.
+            const onSingle = (apply) => {
+                if (collection.length === 0) return [];
+                if (collection.length > 1) {
+                    throw new Error('FHIRPath ' + ast.name + '() needs a single item, not ' + collection.length + '.');
+                }
+                const result = apply(collection[0]);
+                return result === null || result === undefined || (typeof result === 'number' && !Number.isFinite(result)) ? [] : [result];
+            };
+            const onString = (apply) => onSingle((value) => (typeof value === 'string' ? apply(value) : null));
+            const onNumber = (apply) => onSingle((value) => (typeof value === 'number' ? apply(value) : null));
+            const signature = (value) => JSON.stringify(value);
+            const distinct = (values) => {
+                const seen = new Set();
+                return values.filter((value) => !seen.has(signature(value)) && seen.add(signature(value)));
+            };
+            const children = (values) => {
+                const output = [];
+                for (const value of values) {
+                    if (value !== null && typeof value === 'object') {
+                        for (const child of Object.values(value)) {
+                            output.push(...(Array.isArray(child) ? child : [child]));
+                        }
+                    }
+                }
+                return output.filter((value) => value !== null && value !== undefined);
+            };
+            switch (name) {
+                case 'not':
+                    return collection.length === 0 ? [] : [!collectionBoolean(collection)];
+                case 'oftype':
+                    return collection.filter((value) => fhirPathTypeMatches(value, typeArgument()));
+                case 'is':
+                    return onSingle((value) => fhirPathTypeMatches(value, typeArgument()));
+                case 'as':
+                    return onSingle((value) => (fhirPathTypeMatches(value, typeArgument()) ? value : null));
+                case 'single':
+                    return onSingle((value) => value);
+                case 'tail':
+                    return collection.slice(1);
+                case 'skip':
+                    return collection.slice(Math.max(0, Number(argValue(0)) || 0));
+                case 'take':
+                    return collection.slice(0, Math.max(0, Number(argValue(0)) || 0));
+                case 'union':
+                    return distinct([...collection, ...arg(0)]);
+                case 'combine':
+                    return [...collection, ...arg(0)];
+                case 'intersect': {
+                    const other = new Set(arg(0).map(signature));
+                    return distinct(collection.filter((value) => other.has(signature(value))));
+                }
+                case 'exclude': {
+                    const other = new Set(arg(0).map(signature));
+                    return collection.filter((value) => !other.has(signature(value)));
+                }
+                case 'isdistinct':
+                    return [distinct(collection).length === collection.length];
+                case 'subsetof': {
+                    const other = new Set(arg(0).map(signature));
+                    return [collection.every((value) => other.has(signature(value)))];
+                }
+                case 'supersetof': {
+                    const own = new Set(collection.map(signature));
+                    return [arg(0).every((value) => own.has(signature(value)))];
+                }
+                case 'alltrue':
+                    return [collection.every((value) => value === true)];
+                case 'anytrue':
+                    return [collection.some((value) => value === true)];
+                case 'allfalse':
+                    return [collection.every((value) => value === false)];
+                case 'anyfalse':
+                    return [collection.some((value) => value === false)];
+                case 'hasvalue':
+                    return [collection.length === 1 && (collection[0] === null || typeof collection[0] !== 'object')];
+                case 'trace':
+                    return collection;
+                case 'children':
+                    return children(collection);
+                case 'descendants': {
+                    const output = [];
+                    let frontier = children(collection);
+                    for (let depth = 0; frontier.length > 0 && depth < 100; depth++) {
+                        output.push(...frontier);
+                        frontier = children(frontier);
+                    }
+                    return output;
+                }
+                case 'extension': {
+                    const url = argValue(0);
+                    return children(collection.map((value) => ({ extension: value?.extension ?? [] })))
+                        .filter((extension) => extension?.url === url);
+                }
+                case 'weight':
+                case 'ordinal': {
+                    const questionnaire = environment.questionnaire;
+                    return collection.map((value) => codingWeight(value, questionnaire)).filter((weight) => weight !== null);
+                }
+                case 'min':
+                case 'max': {
+                    const numbers = collection.filter((value) => typeof value === 'number');
+                    if (numbers.length === 0) return [];
+                    return [name === 'min' ? Math.min(...numbers) : Math.max(...numbers)];
+                }
+                case 'avg': {
+                    const numbers = collection.filter((value) => typeof value === 'number');
+                    return numbers.length === 0 ? [] : [numbers.reduce((sum, value) => sum + value, 0) / numbers.length];
+                }
+                // Strings.
+                case 'length':
+                    return onString((value) => value.length);
+                case 'upper':
+                    return onString((value) => value.toUpperCase());
+                case 'lower':
+                    return onString((value) => value.toLowerCase());
+                case 'trim':
+                    return onString((value) => value.trim());
+                case 'tochars':
+                    return collection.length === 1 && typeof collection[0] === 'string' ? [...collection[0]] : [];
+                case 'indexof':
+                    return onString((value) => value.indexOf(String(argValue(0))));
+                case 'substring':
+                    return onString((value) => {
+                        const start = Number(argValue(0));
+                        if (!Number.isInteger(start) || start < 0 || start >= value.length) return null;
+                        return ast.args.length > 1 ? value.substring(start, start + Math.max(0, Number(argValue(1)))) : value.slice(start);
+                    });
+                case 'startswith':
+                    return onString((value) => value.startsWith(String(argValue(0))));
+                case 'endswith':
+                    return onString((value) => value.endsWith(String(argValue(0))));
+                case 'contains':
+                    return onString((value) => value.includes(String(argValue(0))));
+                case 'replace':
+                    return onString((value) => value.split(String(argValue(0))).join(String(argValue(1))));
+                case 'matches':
+                    return onString((value) => new RegExp(String(argValue(0)), 'u').test(value));
+                case 'replacematches':
+                    return onString((value) => value.replace(new RegExp(String(argValue(0)), 'gu'), String(argValue(1))));
+                case 'split':
+                    return collection.length === 1 && typeof collection[0] === 'string' ? collection[0].split(String(argValue(0))) : [];
+                case 'join':
+                    return [collection.map((value) => String(value)).join(ast.args.length > 0 ? String(argValue(0)) : '')];
+                // Conversions.
+                case 'tostring':
+                    return onSingle((value) => (value !== null && typeof value === 'object' ? null : String(value)));
+                case 'tointeger':
+                    return onSingle((value) => {
+                        if (typeof value === 'number') return Number.isInteger(value) ? value : null;
+                        if (typeof value === 'boolean') return value ? 1 : 0;
+                        return typeof value === 'string' && /^[+-]?\d+$/.test(value) ? Number.parseInt(value, 10) : null;
+                    });
+                case 'todecimal':
+                    return onSingle((value) => {
+                        if (typeof value === 'number') return value;
+                        if (typeof value === 'boolean') return value ? 1 : 0;
+                        return typeof value === 'string' && /^[+-]?\d+(\.\d+)?$/.test(value) ? Number.parseFloat(value) : null;
+                    });
+                case 'toboolean':
+                    return onSingle((value) => {
+                        if (typeof value === 'boolean') return value;
+                        const text = String(value).toLowerCase();
+                        if (['true', 't', 'yes', 'y', '1', '1.0'].includes(text)) return true;
+                        if (['false', 'f', 'no', 'n', '0', '0.0'].includes(text)) return false;
+                        return null;
+                    });
+                case 'convertstostring':
+                case 'convertstointeger':
+                case 'convertstodecimal':
+                case 'convertstoboolean': {
+                    if (collection.length === 0) return [];
+                    const converted = this.evaluateMoreMethods(name.replace('convertsto', 'to'), ast, collection, environment, context);
+                    return [converted.length > 0];
+                }
+                // Math.
+                case 'abs':
+                    return onNumber(Math.abs);
+                case 'ceiling':
+                    return onNumber(Math.ceil);
+                case 'floor':
+                    return onNumber(Math.floor);
+                case 'truncate':
+                    return onNumber(Math.trunc);
+                case 'sqrt':
+                    return onNumber((value) => (value < 0 ? null : Math.sqrt(value)));
+                case 'exp':
+                    return onNumber(Math.exp);
+                case 'ln':
+                    return onNumber((value) => (value <= 0 ? null : Math.log(value)));
+                case 'log':
+                    return onNumber((value) => (value <= 0 ? null : Math.log(value) / Math.log(Number(argValue(0)))));
+                case 'power':
+                    return onNumber((value) => Math.pow(value, Number(argValue(0))));
+                case 'round':
+                    return onNumber((value) => {
+                        const precision = ast.args.length > 0 ? Number(argValue(0)) : 0;
+                        if (!Number.isInteger(precision) || precision < 0) return null;
+                        const factor = 10 ** precision;
+                        return Math.round(value * factor) / factor;
+                    });
+                default:
                     throw new Error('Unsupported FHIRPath method: ' + ast.name + '.');
             }
         }
@@ -1425,8 +1905,16 @@
                     const condition = collectionBoolean(this.evaluate(ast.args[0], environment, context));
                     return this.evaluate(condition ? ast.args[1] : ast.args[2], environment, context);
                 }
+                case 'today':
+                    return [fhirToday()];
+                case 'now':
+                    return [fhirNow()];
+                case 'timeofday':
+                    return [fhirNow().slice(11, 19)];
                 default:
-                    throw new Error('Unsupported FHIRPath function: ' + ast.name + '.');
+                    // A function called without a source applies to the
+                    // current context: not(), exists(), length() ...
+                    return this.evaluateMethod({ type: 'method', name: ast.name, source: { type: 'special', name: 'this' }, args: ast.args }, environment, context);
             }
         }
 
@@ -1446,14 +1934,72 @@
                 }
                 return [collectionBoolean(this.evaluate(ast.right, environment, context))];
             }
+            if (operator === 'xor') {
+                return [collectionBoolean(this.evaluate(ast.left, environment, context)) !== collectionBoolean(this.evaluate(ast.right, environment, context))];
+            }
+            if (operator === 'implies') {
+                const left = this.evaluate(ast.left, environment, context);
+                if (left.length > 0 && !collectionBoolean(left)) {
+                    return [true];
+                }
+                const right = this.evaluate(ast.right, environment, context);
+                if (collectionBoolean(right)) {
+                    return [true];
+                }
+                return left.length === 0 ? [] : [false];
+            }
 
             const left = this.evaluate(ast.left, environment, context);
             const right = this.evaluate(ast.right, environment, context);
+            // Equivalence (~): strings compare case- and whitespace-insensitively, and two empties are equivalent.
+            const equivalent = (a, b) => {
+                const normalise = (value) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : value);
+                return a.length === b.length && a.every((value, index) => {
+                    const other = b[index];
+                    return typeof value === 'string' && typeof other === 'string' ? normalise(value) === normalise(other) : equalPrimitive(value, other);
+                });
+            };
             switch (operator) {
                 case '=':
                     return [collectionsEqual(left, right)];
                 case '!=':
                     return [!collectionsEqual(left, right)];
+                case '~':
+                    return [equivalent(asCollection(left), asCollection(right))];
+                case '!~':
+                    return [!equivalent(asCollection(left), asCollection(right))];
+                case '|': {
+                    const seen = new Set();
+                    return [...asCollection(left), ...asCollection(right)].filter((value) => {
+                        const signature = JSON.stringify(value);
+                        return !seen.has(signature) && seen.add(signature);
+                    });
+                }
+                case 'in':
+                case 'contains': {
+                    const item = operator === 'in' ? asCollection(left) : asCollection(right);
+                    const within = operator === 'in' ? asCollection(right) : asCollection(left);
+                    if (item.length === 0) {
+                        return [];
+                    }
+                    return [within.some((value) => equalPrimitive(value, item[0]))];
+                }
+                case '&': {
+                    const text = (collection) => {
+                        const value = firstValue(collection);
+                        return value === undefined || value === null ? '' : String(value);
+                    };
+                    return [text(left) + text(right)];
+                }
+                case 'div':
+                case 'mod': {
+                    const leftValue = Number(firstValue(left));
+                    const rightValue = Number(firstValue(right));
+                    if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue) || rightValue === 0) {
+                        return [];
+                    }
+                    return [operator === 'div' ? Math.trunc(leftValue / rightValue) : leftValue % rightValue];
+                }
                 case '>':
                 case '<':
                 case '>=':
@@ -1472,8 +2018,20 @@
                 case '-':
                 case '*':
                 case '/': {
-                    const leftValue = Number(firstValue(left));
-                    const rightValue = Number(firstValue(right));
+                    const leftFirst = firstValue(left);
+                    const rightFirst = firstValue(right);
+                    // A date or dateTime plus or minus a calendar duration (today() - 18 years).
+                    if ((operator === '+' || operator === '-') && typeof leftFirst === 'string'
+                        && rightFirst !== null && typeof rightFirst === 'object' && 'unit' in rightFirst) {
+                        const shifted = shiftFhirDate(leftFirst, rightFirst, operator === '+' ? 1 : -1);
+                        return shifted === null ? [] : [shifted];
+                    }
+                    // String concatenation: + on two strings.
+                    if (operator === '+' && typeof leftFirst === 'string' && typeof rightFirst === 'string') {
+                        return [leftFirst + rightFirst];
+                    }
+                    const leftValue = Number(leftFirst);
+                    const rightValue = Number(rightFirst);
                     if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
                         return [];
                     }
