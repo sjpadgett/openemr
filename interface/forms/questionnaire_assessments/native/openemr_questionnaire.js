@@ -28,6 +28,55 @@
         }
     })();
 
+    // The runtime's own words, in English. The host translates them the
+    // same way it supplies the version: <script data-openemr-strings="{...}">
+    // with the same keys (OpenEMR's include fills it with xl()), and
+    // options.strings overrides per mount. {0}, {1} are filled in order, so
+    // a translation can reorder them.
+    const DEFAULT_STRINGS = Object.freeze({
+        add: '+ Add {0}',
+        addItem: 'item',
+        remove: 'Remove',
+        instance: '#{0}',
+        yes: 'Yes',
+        no: 'No',
+        other: 'Other',
+        unit: 'Unit',
+        referencePlaceholder: 'Reference (e.g. Patient/123)',
+        currentFile: 'Current: {0}',
+        close: 'Close',
+        help: 'Help',
+        legal: 'Legal notice',
+        copyright: 'Copyright',
+        warningsHeading: 'Some questionnaire items could not be fully rendered',
+        unknownIssue: 'Unknown issue',
+        unsupportedType: 'Unsupported Questionnaire item type: {0}',
+        requiresValue: '{0} requires a value',
+        requiresAtLeast: '{0} requires at least {1} answers',
+        allowsAtMost: '{0} allows at most {1} answers',
+        maxLength: '{0} exceeds the maximum length',
+        minLength: '{0} needs at least {1} characters',
+        mimeType: '{0} must be a file of type {1}',
+        maxSize: '{0} must be at most {1} bytes',
+        regex: '{0} does not match the required format',
+        minValue: '{0} must be at least {1}',
+        maxValue: '{0} must be at most {1}',
+        maxDecimalPlaces: '{0} allows at most {1} decimal places',
+    });
+    const SCRIPT_STRINGS = (() => {
+        try {
+            const value = global.document?.currentScript?.dataset?.openemrStrings;
+            const parsed = typeof value === 'string' && value !== '' ? JSON.parse(value) : {};
+            return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+            return {};
+        }
+    })();
+
+    function formatString(template, args) {
+        return String(template).replace(/\{(\d+)\}/g, (match, position) => (args[Number(position)] === undefined ? match : String(args[Number(position)])));
+    }
+
     // Separator for instance-qualified storage keys of children inside a
     // repeating group. NUL cannot occur in a FHIR linkId, so a plain linkId and
     // an instance-qualified key never collide: non-repeating questionnaires
@@ -2776,16 +2825,16 @@
             const requiredCount = minOccurs !== null ? minOccurs : (item.required === true ? 1 : 0);
             if (requiredCount > 0 && answers.length < requiredCount) {
                 add('error', minOccurs !== null ? 'min-occurs' : 'required',
-                    requiredCount === 1 ? label + ' requires a value' : label + ' requires at least ' + requiredCount + ' answers');
+                    requiredCount === 1 ? this.runtime.t('requiresValue', label) : this.runtime.t('requiresAtLeast', label, requiredCount));
             }
             if (maxOccurs !== null && answers.length > maxOccurs) {
-                add('error', 'max-occurs', label + ' allows at most ' + maxOccurs + ' answers');
+                add('error', 'max-occurs', this.runtime.t('allowsAtMost', label, maxOccurs));
             }
             this.validateValueBounds(item, storageKey, label, answers, issues);
             if (Number.isInteger(item.maxLength)) {
                 for (const answer of answers) {
                     if (typeof answer.value === 'string' && answer.value.length > item.maxLength) {
-                        add('error', 'max-length', label + ' exceeds the maximum length');
+                        add('error', 'max-length', this.runtime.t('maxLength', label));
                     }
                 }
             }
@@ -2793,7 +2842,7 @@
             if (minLength !== null) {
                 for (const answer of answers) {
                     if (typeof answer.value === 'string' && answer.value !== '' && answer.value.length < minLength) {
-                        add('error', 'min-length', label + ' needs at least ' + minLength + ' characters');
+                        add('error', 'min-length', this.runtime.t('minLength', label, minLength));
                     }
                 }
             }
@@ -2803,10 +2852,10 @@
                 for (const answer of answers) {
                     const attachment = answer.value ?? {};
                     if (mimeTypes.length > 0 && !mimeTypes.includes(attachment.contentType)) {
-                        add('error', 'mime-type', label + ' must be a file of type ' + mimeTypes.join(', '));
+                        add('error', 'mime-type', this.runtime.t('mimeType', label, mimeTypes.join(', ')));
                     }
                     if (typeof maxSize === 'number' && Number.isFinite(attachment.size) && attachment.size > maxSize) {
-                        add('error', 'max-size', label + ' must be at most ' + maxSize + ' bytes');
+                        add('error', 'max-size', this.runtime.t('maxSize', label, maxSize));
                     }
                 }
             }
@@ -2821,7 +2870,7 @@
                 if (compiledRegex) {
                     for (const answer of answers) {
                         if (typeof answer.value === 'string' && answer.value !== '' && !compiledRegex.test(answer.value)) {
-                            add('error', 'regex', label + ' does not match the required format');
+                            add('error', 'regex', this.runtime.t('regex', label));
                         }
                     }
                 }
@@ -2842,13 +2891,13 @@
                     if (minValue !== undefined && comparable < minValue) {
                         issues.push({
                             severity: 'error', code: 'min-value', linkId, storageKey,
-                            message: label + ' must be at least ' + minValue,
+                            message: this.runtime.t('minValue', label, minValue),
                         });
                     }
                     if (maxValue !== undefined && comparable > maxValue) {
                         issues.push({
                             severity: 'error', code: 'max-value', linkId, storageKey,
-                            message: label + ' must be at most ' + maxValue,
+                            message: this.runtime.t('maxValue', label, maxValue),
                         });
                     }
                 }
@@ -2857,7 +2906,7 @@
                     if (decimals > maxDecimalPlaces) {
                         issues.push({
                             severity: 'error', code: 'max-decimal-places', linkId, storageKey,
-                            message: label + ' allows at most ' + maxDecimalPlaces + ' decimal places',
+                            message: this.runtime.t('maxDecimalPlaces', label, maxDecimalPlaces),
                         });
                     }
                 }
@@ -3650,7 +3699,7 @@
             const close = document.createElement('button');
             close.type = 'button';
             close.className = 'close oe-questionnaire-popup-close';
-            close.setAttribute('aria-label', 'Close');
+            close.setAttribute('aria-label', this.runtime.t('close'));
             close.textContent = '×';
             close.addEventListener('click', (event) => {
                 event.preventDefault();
@@ -3726,10 +3775,10 @@
             const controls = getDisplayControls(item);
             const buttons = [];
             if (controls.help) {
-                buttons.push(this.createPopupTrigger('help', '?', 'Help', () => renderDisplayText(controls.help, document)));
+                buttons.push(this.createPopupTrigger('help', '?', this.runtime.t('help'), () => renderDisplayText(controls.help, document)));
             }
             if (controls.legal) {
-                buttons.push(this.createPopupTrigger('legal', '§', 'Legal notice', () => renderDisplayText(controls.legal, document)));
+                buttons.push(this.createPopupTrigger('legal', '§', this.runtime.t('legal'), () => renderDisplayText(controls.legal, document)));
             }
             return { buttons, flyover: controls.flyover ? plainDisplayText(controls.flyover) : '' };
         }
@@ -3792,7 +3841,7 @@
             const rootControls = this.buildDisplayControls(questionnaire);
             const buttons = [...rootControls.buttons];
             if (copyright !== '') {
-                buttons.unshift(this.createPopupTrigger('copyright', '©', 'Copyright', () => {
+                buttons.unshift(this.createPopupTrigger('copyright', '©', this.runtime.t('copyright'), () => {
                     const content = document.createElement('div');
                     content.className = 'oe-questionnaire-markdown';
                     content.appendChild(renderMarkdown(copyright, document));
@@ -3843,14 +3892,14 @@
             alert.className = 'alert alert-warning mb-3';
             const heading = document.createElement('div');
             heading.className = 'font-weight-bold';
-            heading.textContent = 'Some questionnaire items could not be fully rendered';
+            heading.textContent = this.runtime.t('warningsHeading');
             alert.appendChild(heading);
             const list = document.createElement('ul');
             list.className = 'mb-0 pl-3';
             for (const warning of blocking) {
                 const entry = document.createElement('li');
                 const linkIdLabel = warning.linkId ? '[' + warning.linkId + '] ' : '';
-                entry.textContent = linkIdLabel + (warning.message ?? warning.code ?? 'Unknown issue');
+                entry.textContent = linkIdLabel + (warning.message ?? warning.code ?? this.runtime.t('unknownIssue'));
                 list.appendChild(entry);
             }
             alert.appendChild(list);
@@ -4013,7 +4062,7 @@
                 const addButton = document.createElement('button');
                 addButton.type = 'button';
                 addButton.className = 'btn btn-sm btn-outline-primary oe-questionnaire-repeat-add';
-                addButton.textContent = '+ Add ' + (item.text || 'item');
+                addButton.textContent = this.runtime.t('add', item.text || this.runtime.t('addItem'));
                 addButton.disabled = item.readOnly === true || (maxOccurs !== null && count >= maxOccurs);
                 addButton.addEventListener('click', () => {
                     this.runtime.responseStore.addRepeatInstance(storageKey);
@@ -4038,13 +4087,13 @@
             instanceHeader.className = 'oe-questionnaire-group-instance-header';
             const label = document.createElement('span');
             label.className = 'small text-muted';
-            label.textContent = '#' + (instanceIndex + 1);
+            label.textContent = this.runtime.t('instance', instanceIndex + 1);
             instanceHeader.appendChild(label);
             if (item.readOnly !== true && count > minOccurs) {
                 const removeButton = document.createElement('button');
                 removeButton.type = 'button';
                 removeButton.className = 'btn btn-sm btn-link text-danger oe-questionnaire-repeat-remove py-0';
-                removeButton.textContent = 'Remove';
+                removeButton.textContent = this.runtime.t('remove');
                 removeButton.addEventListener('click', () => {
                     this.runtime.responseStore.removeRepeatInstance(storageKey, instanceIndex);
                     rerender();
@@ -4139,7 +4188,7 @@
                 default: {
                     const unsupported = document.createElement('div');
                     unsupported.className = 'alert alert-warning';
-                    unsupported.textContent = 'Unsupported Questionnaire item type: ' + item.type;
+                    unsupported.textContent = this.runtime.t('unsupportedType', item.type);
                     container.appendChild(unsupported);
                     return container;
                 }
@@ -4251,7 +4300,7 @@
                 const openInput = document.createElement('input');
                 openInput.type = 'text';
                 openInput.className = 'form-control' + (openLabelText !== '' ? '' : ' mt-2');
-                openInput.placeholder = openLabelText !== '' ? openLabelText : 'Other';
+                openInput.placeholder = openLabelText !== '' ? openLabelText : this.runtime.t('other');
                 // The free-text answer is a valueString that is not one of the
                 // options (string-typed options are valueString too).
                 const optionAnswers = options.map(getAnswerOptionValue).filter(Boolean);
@@ -4273,8 +4322,8 @@
         renderBoolean(item, container, answers, inputId, storageKey = item.linkId) {
             const selected = firstValue(answers)?.value;
             [
-                { value: true, label: 'Yes' },
-                { value: false, label: 'No' },
+                { value: true, label: this.runtime.t('yes') },
+                { value: false, label: this.runtime.t('no') },
             ].forEach((option, index) => {
                 const row = document.createElement('div');
                 row.className = 'custom-control custom-radio custom-control-inline';
@@ -4429,7 +4478,7 @@
             if (unitOptions.length > 0 && !unitOpen) {
                 unitInput = document.createElement('select');
                 unitInput.className = 'form-control oe-questionnaire-unit-select';
-                unitInput.setAttribute('aria-label', 'Unit');
+                unitInput.setAttribute('aria-label', this.runtime.t('unit'));
                 const blank = document.createElement('option');
                 blank.value = '';
                 blank.textContent = '';
@@ -4449,8 +4498,8 @@
                 unitInput = document.createElement('input');
                 unitInput.type = 'text';
                 unitInput.className = 'form-control';
-                unitInput.placeholder = 'Unit';
-                unitInput.setAttribute('aria-label', 'Unit');
+                unitInput.placeholder = this.runtime.t('unit');
+                unitInput.setAttribute('aria-label', this.runtime.t('unit'));
                 unitInput.value = currentUnit;
                 if (unitOptions.length > 0) {
                     const list = document.createElement('datalist');
@@ -4514,7 +4563,7 @@
             input.type = 'text';
             input.id = inputId;
             input.className = 'form-control';
-            input.placeholder = getEntryFormat(item) || 'Reference (e.g. Patient/123)';
+            input.placeholder = getEntryFormat(item) || this.runtime.t('referencePlaceholder');
             input.value = firstValue(answers)?.value?.reference ?? '';
             input.disabled = item.readOnly === true;
             input.addEventListener('change', () => {
@@ -4543,7 +4592,7 @@
             const info = document.createElement('div');
             info.className = 'small text-muted mt-1 oe-questionnaire-attachment-info';
             if (existing?.title) {
-                info.textContent = 'Current: ' + existing.title;
+                info.textContent = this.runtime.t('currentFile', existing.title);
             }
             input.addEventListener('change', () => {
                 const file = input.files && input.files[0];
@@ -4669,7 +4718,7 @@
                         const removeButton = document.createElement('button');
                         removeButton.type = 'button';
                         removeButton.className = 'btn btn-sm btn-link text-danger oe-questionnaire-repeat-remove py-0';
-                        removeButton.textContent = 'Remove';
+                        removeButton.textContent = this.runtime.t('remove');
                         removeButton.addEventListener('click', () => {
                             const current = this.runtime.responseStore.getAnswers(storageKey);
                             current.splice(index, 1);
@@ -4803,6 +4852,14 @@
             this.renderer.mount(container);
             this.emitWarnings();
             return this;
+        }
+
+        // One of the runtime's own strings, in the host's language when it supplied one.
+        t(key, ...args) {
+            const fromOptions = this.options?.strings?.[key];
+            const template = typeof fromOptions === 'string' ? fromOptions
+                : (typeof SCRIPT_STRINGS[key] === 'string' ? SCRIPT_STRINGS[key] : DEFAULT_STRINGS[key] ?? key);
+            return formatString(template, args);
         }
 
         answerValueKeyForItem(item) {
@@ -4949,6 +5006,7 @@
     global.OpenEMRQuestionnaire = {
         version: '0.2.0',
         EXTENSIONS,
+        DEFAULT_STRINGS,
         QuestionnaireCompiler,
         QuestionnaireResponseStore,
         QuestionnaireBehaviorEngine,
