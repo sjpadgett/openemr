@@ -172,7 +172,14 @@
         LAUNCH_CONTEXT: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext',
         SIGNATURE_REQUIRED: 'http://hl7.org/fhir/StructureDefinition/questionnaire-signatureRequired',
         RESPONSE_SIGNATURE: 'http://hl7.org/fhir/StructureDefinition/questionnaireresponse-signature',
+        SUB_QUESTIONNAIRE: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-subQuestionnaire',
+        SHORT_TEXT: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-shortText',
+        WIDTH: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-width',
+        KEYBOARD: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-keyboard',
     });
+
+    // sdc-questionnaire-keyboard codes as the inputmode hint browsers understand.
+    const KEYBOARD_INPUT_MODES = Object.freeze({ phone: 'tel', email: 'email', number: 'decimal', url: 'url', chat: 'text' });
 
     // cqf-expression on the item elements the runtime evaluates (_required, _readOnly, _text).
     const DYNAMIC_ELEMENTS = Object.freeze(['required', 'readOnly', 'text']);
@@ -187,16 +194,12 @@
     const UNSUPPORTED_BEHAVIOR_EXTENSIONS = Object.freeze([
         SDC_BASE + 'sdc-questionnaire-candidateExpression',
         SDC_BASE + 'sdc-questionnaire-lookupQuestionnaire',
-        SDC_BASE + 'sdc-questionnaire-subQuestionnaire',
         CORE_BASE + 'cqf-expression',
         CORE_BASE + 'questionnaire-referenceProfile',
     ]);
     const UNSUPPORTED_PRESENTATION_EXTENSIONS = Object.freeze([
         SDC_BASE + 'sdc-questionnaire-choiceColumn',
-        SDC_BASE + 'sdc-questionnaire-width',
-        SDC_BASE + 'sdc-questionnaire-keyboard',
         SDC_BASE + 'sdc-questionnaire-entryMode',
-        SDC_BASE + 'sdc-questionnaire-shortText',
         CORE_BASE + 'rendering-style',
     ]);
 
@@ -593,6 +596,38 @@
 
     function base64Utf8(data) {
         return decodeURIComponent(Array.from(atob(data), (character) => '%' + character.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+    }
+
+    // SDC modular forms: each display item carrying subQuestionnaire is
+    // replaced by the referenced Questionnaire's items, from the forms the
+    // host supplies (options.subQuestionnaires, by canonical, with or without
+    // |version), recursively; their contained resources join the form's.
+    // One the host didn't supply stays as it is, and is reported.
+    function assembleQuestionnaire(questionnaire, supplied) {
+        const lookup = (canonical) => supplied[canonical] ?? supplied[String(canonical).split('|')[0]] ?? null;
+        const contained = [...(questionnaire.contained ?? [])];
+        const seen = new Set();
+        const expand = (items) => (items ?? []).flatMap((item) => {
+            const canonical = findExtension(item, EXTENSIONS.SUB_QUESTIONNAIRE)?.valueCanonical;
+            const sub = item.type === 'display' && typeof canonical === 'string' && !seen.has(canonical) ? lookup(canonical) : null;
+            if (sub && Array.isArray(sub.item)) {
+                seen.add(canonical);
+                for (const resource of sub.contained ?? []) {
+                    if (!contained.some((existing) => existing?.id === resource?.id)) {
+                        contained.push(deepClone(resource));
+                    }
+                }
+                const inlined = expand(deepClone(sub.item));
+                seen.delete(canonical);
+                return inlined;
+            }
+            return [Array.isArray(item.item) ? { ...item, item: expand(item.item) } : item];
+        });
+        const assembled = { ...questionnaire, item: expand(questionnaire.item) };
+        if (contained.length > 0) {
+            assembled.contained = contained;
+        }
+        return assembled;
     }
 
     // usageMode display / display-non-empty: shown when reviewing a form, not while filling it.
@@ -1102,6 +1137,18 @@
                     severity: 'error',
                     message: 'This form needs ' + url + ', which this renderer does not support, so it is not shown.',
                 });
+            }
+
+            // A subQuestionnaire still here wasn't supplied by the host, so its part of the form is missing.
+            for (const compiledItem of compiled.items) {
+                const canonical = findExtension(compiledItem.item, EXTENSIONS.SUB_QUESTIONNAIRE)?.valueCanonical;
+                if (compiledItem.item.type === 'display' && typeof canonical === 'string') {
+                    compiled.warnings.push({
+                        code: 'sub-questionnaire-missing',
+                        linkId: compiledItem.linkId,
+                        message: 'This form includes ' + canonical + ', which was not supplied, so that part is not shown.',
+                    });
+                }
             }
 
             const handledControls = ['drop-down', 'check-box', 'radio-button', 'autocomplete', 'slider', 'spinner', 'text-box', 'list',
@@ -4746,7 +4793,12 @@
                 const heading = document.createElement('th');
                 heading.scope = 'col';
                 heading.id = tableId + '-col-' + index;
-                heading.textContent = child.text || child.linkId;
+                heading.textContent = getStringExtension(child, EXTENSIONS.SHORT_TEXT) || child.text || child.linkId;
+                const width = getTypedExtensionValue(child, EXTENSIONS.WIDTH);
+                const widthUnit = width?.code ?? width?.unit;
+                if (typeof width?.value === 'number' && ['%', 'em', 'rem', 'px'].includes(widthUnit)) {
+                    heading.style.width = width.value + widthUnit;
+                }
                 if (child.required === true) {
                     const required = document.createElement('span');
                     required.className = 'text-danger ml-1';
@@ -5312,6 +5364,10 @@
             input.className = 'form-control';
             input.value = firstValue(answers)?.value ?? '';
             input.disabled = item.readOnly === true;
+            const keyboard = getTypedExtensionValue(item, EXTENSIONS.KEYBOARD)?.code;
+            if (KEYBOARD_INPUT_MODES[keyboard]) {
+                input.inputMode = KEYBOARD_INPUT_MODES[keyboard];
+            }
             if (Number.isInteger(item.maxLength)) {
                 input.maxLength = item.maxLength;
             }
@@ -5726,6 +5782,9 @@
     class QuestionnaireRuntime {
         constructor({ questionnaire, questionnaireResponse = null, options = {} }) {
             this.questionnaire = deepClone(questionnaire);
+            if (options.subQuestionnaires && typeof options.subQuestionnaires === 'object') {
+                this.questionnaire = assembleQuestionnaire(this.questionnaire, options.subQuestionnaires);
+            }
             this.questionnaireResponse = questionnaireResponse ? deepClone(questionnaireResponse) : null;
             this.options = options;
             this.compiler = new QuestionnaireCompiler();

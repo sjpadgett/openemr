@@ -151,3 +151,47 @@ test('an item control the runtime lacks gets a console note, and the item still 
     ]);
     expect(container.querySelector('[data-link-id="x"] input')).not.toBeNull();
 });
+
+describe('modular forms and column hints', () => {
+    const subQuestionnaire = (canonical) => ({ url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-subQuestionnaire', valueCanonical: canonical });
+
+    test('a subQuestionnaire display item is replaced by the supplied form\'s items, with its contained resources', () => {
+        const phq2 = {
+            resourceType: 'Questionnaire', url: 'http://example.org/Questionnaire/phq-2', status: 'active',
+            contained: [{ resourceType: 'ValueSet', id: 'freq', status: 'active', expansion: { timestamp: '2026-10-23', contains: [{ code: '0', display: 'Not at all' }, { code: '1', display: 'Several days' }] } }],
+            item: [{ linkId: 'p1', type: 'choice', text: 'Little interest', answerValueSet: '#freq' }],
+        };
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const runtime = runtimeApi.mount({
+            container,
+            questionnaire: { resourceType: 'Questionnaire', status: 'active', item: [
+                { linkId: 'intro', type: 'display', text: 'Yearly screen' },
+                { linkId: 'phq2-here', type: 'display', text: 'PHQ-2', extension: [subQuestionnaire('http://example.org/Questionnaire/phq-2|1')] },
+                { linkId: 'missing', type: 'display', text: 'GAD-2', extension: [subQuestionnaire('http://example.org/Questionnaire/gad-2')] },
+            ] },
+            options: { subQuestionnaires: { 'http://example.org/Questionnaire/phq-2': phq2 } },
+        });
+        expect(container.querySelector('[data-link-id="phq2-here"]')).toBeNull();
+        expect(container.querySelectorAll('[data-link-id="p1"] input[type="radio"]')).toHaveLength(2);
+        expect(container.querySelector('[data-link-id="missing"]')).not.toBeNull();
+        expect(runtime.collectWarnings().filter((warning) => warning.code === 'sub-questionnaire-missing').map((warning) => warning.linkId)).toEqual(['missing']);
+    });
+
+    test('gtable columns use shortText and width; keyboard sets inputmode', () => {
+        const SDC = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/';
+        const { container } = setup([{
+            linkId: 'contacts', type: 'group', repeats: true, text: 'Contacts', extension: [control('gtable')], item: [
+                { linkId: 'phone', type: 'string', text: 'Telephone number, with area code', extension: [
+                    { url: SDC + 'sdc-questionnaire-shortText', valueString: 'Phone' },
+                    { url: SDC + 'sdc-questionnaire-width', valueQuantity: { value: 40, unit: '%', system: 'http://unitsofmeasure.org', code: '%' } },
+                    { url: SDC + 'sdc-questionnaire-keyboard', valueCoding: { system: 'http://hl7.org/fhir/uv/sdc/CodeSystem/keyboardType', code: 'phone' } },
+                ] },
+            ],
+        }]);
+        const heading = container.querySelector('.oe-questionnaire-grid thead th');
+        expect(heading.textContent).toBe('Phone');
+        expect(heading.style.width).toBe('40%');
+        expect(container.querySelector('td[data-link-id="phone"] input').inputMode).toBe('tel');
+    });
+});

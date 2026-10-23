@@ -79,7 +79,7 @@ describe('extensions not acted on', () => {
     test('a presentation-only one is a console note, and a repeats expression is found under _repeats', () => {
         const { runtime } = setup({
             item: [
-                { linkId: 'a', type: 'string', text: 'A', extension: [{ url: SDC + 'sdc-questionnaire-width', valueQuantity: { value: 50, unit: '%' } }] },
+                { linkId: 'a', type: 'string', text: 'A', extension: [{ url: SDC + 'sdc-questionnaire-choiceColumn', extension: [{ url: 'path', valueString: 'display' }] }] },
                 { linkId: 'b', type: 'string', text: 'B', _repeats: { extension: [{ url: CORE + 'cqf-expression', valueExpression: { language: 'text/fhirpath', expression: 'true' } }] } },
             ],
         });
