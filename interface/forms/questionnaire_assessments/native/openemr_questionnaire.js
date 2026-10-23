@@ -89,7 +89,50 @@
         UNIT_OPTION: 'http://hl7.org/fhir/StructureDefinition/questionnaire-unitOption',
         UNIT_OPEN: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-unitOpen',
         ANSWER_CONSTRAINT: 'http://hl7.org/fhir/StructureDefinition/questionnaire-answerConstraint',
+        MIN_LENGTH: 'http://hl7.org/fhir/StructureDefinition/minLength',
+        MIME_TYPE: 'http://hl7.org/fhir/StructureDefinition/mimeType',
+        MAX_SIZE: 'http://hl7.org/fhir/StructureDefinition/maxSize',
+        OPTION_EXCLUSIVE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-optionExclusive',
+        CRITICAL_EXTENSION: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-rendering-criticalExtension',
     });
+
+    // Extensions SDC 4.0.0's Advanced Rendering and Advanced Behavior
+    // profiles list that this runtime doesn't act on. Those that change what
+    // is captured or valid get a visible warning; presentation-only ones a
+    // console note. Population and extraction extensions (launchContext,
+    // observationExtract ...) are left out: they don't change the form shown.
+    const SDC_BASE = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/';
+    const CORE_BASE = 'http://hl7.org/fhir/StructureDefinition/';
+    const UNSUPPORTED_BEHAVIOR_EXTENSIONS = Object.freeze([
+        SDC_BASE + 'sdc-questionnaire-answerExpression',
+        SDC_BASE + 'sdc-questionnaire-answerOptionsToggleExpression',
+        SDC_BASE + 'sdc-questionnaire-candidateExpression',
+        SDC_BASE + 'sdc-questionnaire-lookupQuestionnaire',
+        SDC_BASE + 'sdc-questionnaire-minQuantity',
+        SDC_BASE + 'sdc-questionnaire-maxQuantity',
+        SDC_BASE + 'sdc-questionnaire-subQuestionnaire',
+        CORE_BASE + 'cqf-expression',
+        CORE_BASE + 'questionnaire-signatureRequired',
+        CORE_BASE + 'questionnaire-unitValueSet',
+        CORE_BASE + 'questionnaire-referenceResource',
+        CORE_BASE + 'questionnaire-referenceProfile',
+        CORE_BASE + 'targetConstraint',
+    ]);
+    const UNSUPPORTED_PRESENTATION_EXTENSIONS = Object.freeze([
+        SDC_BASE + 'sdc-questionnaire-itemMedia',
+        SDC_BASE + 'sdc-questionnaire-itemAnswerMedia',
+        SDC_BASE + 'sdc-questionnaire-collapsible',
+        SDC_BASE + 'sdc-questionnaire-columnCount',
+        SDC_BASE + 'sdc-questionnaire-choiceColumn',
+        SDC_BASE + 'sdc-questionnaire-width',
+        SDC_BASE + 'sdc-questionnaire-keyboard',
+        SDC_BASE + 'sdc-questionnaire-entryMode',
+        SDC_BASE + 'sdc-questionnaire-shortText',
+        CORE_BASE + 'questionnaire-sliderStepValue',
+        CORE_BASE + 'questionnaire-supportHyperlink',
+        CORE_BASE + 'questionnaire-usageMode',
+        CORE_BASE + 'rendering-style',
+    ]);
 
     function deepClone(value) {
         return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -331,6 +374,17 @@
     function getIntegerExtension(item, url) {
         const value = getTypedExtensionValue(item, url);
         return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
+    }
+
+    // The mimeType extension repeats: one valueCode per allowed type.
+    function attachmentMimeTypes(item) {
+        return findExtensions(item, EXTENSIONS.MIME_TYPE)
+            .map((extension) => extension?.valueCode)
+            .filter((code) => typeof code === 'string' && code !== '');
+    }
+
+    function isExclusiveOption(option) {
+        return getBooleanExtension(option, EXTENSIONS.OPTION_EXCLUSIVE) === true;
     }
 
     function getStringExtension(item, url) {
@@ -760,6 +814,7 @@
             };
 
             walk(questionnaire.item);
+            this.checkExtensions(questionnaire, compiled);
 
             // Precompute, for every item, the chain of repeating-group ancestors
             // (outermost first), and for every repeating group the set of its
@@ -808,6 +863,64 @@
             }
 
             return compiled;
+        }
+
+        // SDC's rendering-criticalExtension names extensions a form can't be
+        // shown without; one this runtime doesn't support stops the render
+        // ("should display an error message or warning and refrain from
+        // presenting the instance"). Other spec extensions it doesn't act on
+        // are reported once each, with the first item that carries them.
+        checkExtensions(questionnaire, compiled) {
+            const supported = new Set([...Object.values(EXTENSIONS), RENDERING_MARKDOWN, CORE_BASE + 'rendering-xhtml']);
+            const critical = [...(questionnaire.extension ?? []), ...(questionnaire.modifierExtension ?? [])]
+                .filter((extension) => extension?.url === EXTENSIONS.CRITICAL_EXTENSION)
+                .map((extension) => extension.valueCanonical ?? extension.valueUri ?? extension.valueUrl)
+                .filter((url) => typeof url === 'string' && url !== '');
+            compiled.unsupportedCritical = critical.filter((url) => !supported.has(url.split('|')[0]));
+            for (const url of compiled.unsupportedCritical) {
+                compiled.warnings.push({
+                    code: 'critical-extension-unsupported',
+                    severity: 'error',
+                    message: 'This form needs ' + url + ', which this renderer does not support, so it is not shown.',
+                });
+            }
+
+            const firstUse = new Map();
+            const visit = (node, linkId) => {
+                if (Array.isArray(node)) {
+                    node.forEach((child) => visit(child, linkId));
+                    return;
+                }
+                if (node === null || typeof node !== 'object') {
+                    return;
+                }
+                const here = typeof node.linkId === 'string' ? node.linkId : linkId;
+                for (const extension of [...(node.extension ?? []), ...(node.modifierExtension ?? [])]) {
+                    if (typeof extension?.url === 'string' && !firstUse.has(extension.url)) {
+                        firstUse.set(extension.url, here);
+                    }
+                }
+                for (const [key, value] of Object.entries(node)) {
+                    if (key !== 'contained' && value !== null && typeof value === 'object') {
+                        visit(value, here);
+                    }
+                }
+            };
+            visit(questionnaire.item, undefined);
+            visit(questionnaire.extension ?? [], undefined);
+            for (const [url, linkId] of firstUse) {
+                const behavior = UNSUPPORTED_BEHAVIOR_EXTENSIONS.includes(url);
+                if (!behavior && !UNSUPPORTED_PRESENTATION_EXTENSIONS.includes(url)) {
+                    continue;
+                }
+                compiled.warnings.push({
+                    code: 'extension-unsupported',
+                    linkId,
+                    severity: behavior ? 'warning' : 'info',
+                    message: url.slice(url.lastIndexOf('/') + 1) + ' is not supported here, so it has no effect'
+                        + (behavior ? ' on what is captured or checked.' : ' on how the form looks.'),
+                });
+            }
         }
     }
 
@@ -2676,6 +2789,27 @@
                     }
                 }
             }
+            const minLength = getIntegerExtension(item, EXTENSIONS.MIN_LENGTH);
+            if (minLength !== null) {
+                for (const answer of answers) {
+                    if (typeof answer.value === 'string' && answer.value !== '' && answer.value.length < minLength) {
+                        add('error', 'min-length', label + ' needs at least ' + minLength + ' characters');
+                    }
+                }
+            }
+            if (item.type === 'attachment') {
+                const mimeTypes = attachmentMimeTypes(item);
+                const maxSize = getTypedExtensionValue(item, EXTENSIONS.MAX_SIZE);
+                for (const answer of answers) {
+                    const attachment = answer.value ?? {};
+                    if (mimeTypes.length > 0 && !mimeTypes.includes(attachment.contentType)) {
+                        add('error', 'mime-type', label + ' must be a file of type ' + mimeTypes.join(', '));
+                    }
+                    if (typeof maxSize === 'number' && Number.isFinite(attachment.size) && attachment.size > maxSize) {
+                        add('error', 'max-size', label + ' must be at most ' + maxSize + ' bytes');
+                    }
+                }
+            }
             const regexPattern = getRegex(item);
             if (regexPattern !== '') {
                 let compiledRegex = null;
@@ -3628,6 +3762,11 @@
             this.warningsNode.className = 'oe-questionnaire-warnings d-none';
             this.warningsNode.setAttribute('role', 'alert');
             container.appendChild(this.warningsNode);
+            if ((this.runtime.compiled.unsupportedCritical ?? []).length > 0) {
+                // The form says it can't be shown without these; show why, not the form.
+                this.renderWarnings(this.runtime.collectWarnings());
+                return;
+            }
             const fragment = document.createDocumentFragment();
             for (const item of this.runtime.questionnaire.item ?? []) {
                 fragment.appendChild(this.renderItem(item));
@@ -4039,9 +4178,21 @@
                     input.addEventListener('change', () => {
                         if (useCheckboxes) {
                             const current = this.runtime.responseStore.getAnswers(storageKey);
-                            const next = input.checked
+                            const same = (answer, value) => answer.valueKey === value.valueKey && equalPrimitive(answer.value, value.value);
+                            let next = input.checked
                                 ? [...current, optionAnswer]
-                                : current.filter((answer) => !(answer.valueKey === optionAnswer.valueKey && equalPrimitive(answer.value, optionAnswer.value)));
+                                : current.filter((answer) => !same(answer, optionAnswer));
+                            // optionExclusive: "None of these" clears the others, and any other clears it.
+                            if (input.checked) {
+                                const exclusive = options.filter(isExclusiveOption).map(getAnswerOptionValue).filter(Boolean);
+                                next = isExclusiveOption(option)
+                                    ? [optionAnswer]
+                                    : next.filter((answer) => !exclusive.some((value) => same(answer, value)));
+                            }
+                            for (const box of container.querySelectorAll('input[type="checkbox"]')) {
+                                const boxAnswer = getAnswerOptionValue(options[Number(box.value)]);
+                                box.checked = boxAnswer !== null && next.some((answer) => same(answer, boxAnswer));
+                            }
                             this.runtime.setAnswers(storageKey, next);
                         } else if (input.checked) {
                             this.runtime.setAnswers(storageKey, [optionAnswer]);
@@ -4385,6 +4536,10 @@
             input.id = inputId;
             input.className = 'form-control-file';
             input.disabled = item.readOnly === true;
+            const mimeTypes = attachmentMimeTypes(item);
+            if (mimeTypes.length > 0) {
+                input.accept = mimeTypes.join(',');
+            }
             const info = document.createElement('div');
             info.className = 'small text-muted mt-1 oe-questionnaire-attachment-info';
             if (existing?.title) {
