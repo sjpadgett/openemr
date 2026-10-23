@@ -1064,6 +1064,20 @@
                 });
             }
 
+            const handledControls = ['drop-down', 'check-box', 'radio-button', 'autocomplete', 'slider', 'spinner', 'text-box', 'list',
+                'table', 'gtable', 'header', 'footer', 'help', 'legal', 'flyover', 'prompt', 'unit', 'lower', 'upper', 'inline'];
+            for (const compiledItem of compiled.items) {
+                const itemControl = compiledItem.itemControl;
+                if (itemControl !== '' && !handledControls.includes(itemControl)) {
+                    compiled.warnings.push({
+                        code: 'item-control-unsupported',
+                        linkId: compiledItem.linkId,
+                        severity: 'info',
+                        message: 'Item control "' + itemControl + '" is not supported here; the item is shown the default way.',
+                    });
+                }
+            }
+
             const firstUse = new Map();
             const evaluatedElements = DYNAMIC_ELEMENTS.map((element) => '_' + element);
             const visit = (node, linkId, key = '') => {
@@ -4432,6 +4446,10 @@
             const body = document.createElement('div');
             body.className = 'card-body';
             this.applyGroupPresentation(item, wrapper, header, body);
+            if (getItemControl(item) === 'table' && this.renderMatrix(item, body, keyPrefix)) {
+                wrapper.appendChild(body);
+                return wrapper;
+            }
             for (const child of item.item ?? []) {
                 if (isDetachedDisplay(child)) {
                     continue;
@@ -4440,6 +4458,185 @@
             }
             wrapper.appendChild(body);
             return wrapper;
+        }
+
+        // table: "questions within the group are rows in the table with
+        // possible answers as columns", for groups of choice questions that
+        // share their answers (the PHQ-9's shape). Each row is the question's
+        // node, so enableWhen and validation work as usual; each answer is
+        // named by its row and column headers. A group with anything else in
+        // it renders as usual.
+        renderMatrix(item, body, keyPrefix) {
+            const children = (item.item ?? []).filter((child) => !isDetachedDisplay(child));
+            const choice = (child) => (child.type === 'choice' || child.type === 'open-choice' || OPTION_CAPABLE_TYPES.includes(child.type))
+                && (child.item ?? []).every(isDetachedDisplay)
+                && this.runtime.answerOptionsFor(child).some((option) => getAnswerOptionValue(option) !== null);
+            if (children.length === 0 || !children.every(choice)) {
+                return false;
+            }
+            const columns = [];
+            for (const child of children) {
+                for (const option of this.runtime.answerOptionsFor(child)) {
+                    const value = getAnswerOptionValue(option);
+                    if (value !== null && !columns.some((column) => column.value.valueKey === value.valueKey && equalPrimitive(column.value.value, value.value))) {
+                        columns.push({ value, label: answerOptionLabel(option, value) });
+                    }
+                }
+            }
+            const tableId = safeId(keyPrefix + item.linkId) + '-matrix';
+            const table = document.createElement('table');
+            table.className = 'table table-sm oe-questionnaire-matrix';
+            const headRow = table.createTHead().insertRow();
+            headRow.appendChild(document.createElement('td'));
+            columns.forEach((column, index) => {
+                const heading = document.createElement('th');
+                heading.scope = 'col';
+                heading.id = tableId + '-col-' + index;
+                heading.textContent = column.label;
+                headRow.appendChild(heading);
+            });
+            const tbody = table.createTBody();
+            for (const child of children) {
+                const storageKey = keyPrefix + child.linkId;
+                const row = tbody.insertRow();
+                row.dataset.linkId = child.linkId;
+                if (keyPrefix !== '') {
+                    row.dataset.instanceKey = storageKey;
+                }
+                row.className = 'oe-questionnaire-item oe-questionnaire-question';
+                this.nodes.set(storageKey, row);
+                const heading = document.createElement('th');
+                heading.scope = 'row';
+                heading.id = safeId(storageKey) + '-label';
+                heading.className = 'oe-questionnaire-label';
+                heading.textContent = [child.prefix, child.text].filter(Boolean).join(child.prefix && child.text ? ' — ' : '') || child.linkId;
+                if (this.runtime.isRequired(child.linkId, child)) {
+                    const required = document.createElement('span');
+                    required.className = 'text-danger ml-1';
+                    required.textContent = '*';
+                    required.setAttribute('aria-hidden', 'true');
+                    heading.appendChild(required);
+                }
+                row.appendChild(heading);
+                const options = this.runtime.answerOptionsFor(child);
+                const repeats = child.repeats === true;
+                columns.forEach((column, columnIndex) => {
+                    const cell = row.insertCell();
+                    const optionIndex = options.findIndex((option) => {
+                        const value = getAnswerOptionValue(option);
+                        return value !== null && value.valueKey === column.value.valueKey && equalPrimitive(value.value, column.value.value);
+                    });
+                    if (optionIndex === -1) {
+                        return;
+                    }
+                    const optionAnswer = getAnswerOptionValue(options[optionIndex]);
+                    const input = document.createElement('input');
+                    input.type = repeats ? 'checkbox' : 'radio';
+                    input.name = safeId(storageKey);
+                    input.id = safeId(storageKey) + '-' + optionIndex;
+                    input.value = String(optionIndex);
+                    input.setAttribute('form', NATIVE_CONTROL_FORM_ID);
+                    input.setAttribute('aria-labelledby', heading.id + ' ' + tableId + '-col-' + columnIndex);
+                    input.checked = this.runtime.responseStore.getAnswers(storageKey).some((answer) => answer.valueKey === optionAnswer.valueKey && equalPrimitive(answer.value, optionAnswer.value));
+                    input.disabled = child.readOnly === true;
+                    const ordinal = getOrdinalValue(options[optionIndex]);
+                    if (ordinal !== null) {
+                        input.dataset.ordinal = String(ordinal);
+                    }
+                    input.addEventListener('change', () => {
+                        const current = this.runtime.responseStore.getAnswers(storageKey);
+                        const same = (answer) => answer.valueKey === optionAnswer.valueKey && equalPrimitive(answer.value, optionAnswer.value);
+                        if (repeats) {
+                            this.runtime.setAnswers(storageKey, input.checked ? [...current, optionAnswer] : current.filter((answer) => !same(answer)));
+                        } else if (input.checked) {
+                            this.runtime.setAnswers(storageKey, [optionAnswer]);
+                        }
+                    });
+                    cell.appendChild(input);
+                });
+            }
+            const scroll = document.createElement('div');
+            scroll.className = 'table-responsive';
+            scroll.appendChild(table);
+            body.appendChild(scroll);
+            return true;
+        }
+
+        // gtable: "questions within the group are columns in the table with
+        // each group repetition as a row" (a medication list, a log). Each
+        // cell is its question's node for that repetition, named by its
+        // column header.
+        renderGridTable(item, keyPrefix, count, minOccurs, rerender) {
+            const storageKey = keyPrefix + item.linkId;
+            const columns = (item.item ?? []).filter((child) => !isDetachedDisplay(child) && child.type !== 'display');
+            const tableId = safeId(storageKey) + '-grid';
+            const table = document.createElement('table');
+            table.className = 'table table-sm oe-questionnaire-grid';
+            const headRow = table.createTHead().insertRow();
+            columns.forEach((child, index) => {
+                const heading = document.createElement('th');
+                heading.scope = 'col';
+                heading.id = tableId + '-col-' + index;
+                heading.textContent = child.text || child.linkId;
+                if (child.required === true) {
+                    const required = document.createElement('span');
+                    required.className = 'text-danger ml-1';
+                    required.textContent = '*';
+                    required.setAttribute('aria-hidden', 'true');
+                    heading.appendChild(required);
+                }
+                headRow.appendChild(heading);
+            });
+            headRow.appendChild(document.createElement('td'));
+            const tbody = table.createTBody();
+            for (let instanceIndex = 0; instanceIndex < count; instanceIndex++) {
+                const instancePrefix = instanceKeyPrefix(storageKey, instanceIndex);
+                const row = tbody.insertRow();
+                row.className = 'oe-questionnaire-group-instance';
+                row.dataset.instanceIndex = String(instanceIndex);
+                columns.forEach((child, columnIndex) => {
+                    const key = instancePrefix + child.linkId;
+                    const cell = row.insertCell();
+                    if (child.type === 'group') {
+                        cell.appendChild(this.renderItem(child, instancePrefix));
+                        return;
+                    }
+                    cell.dataset.linkId = child.linkId;
+                    cell.dataset.instanceKey = key;
+                    cell.className = 'oe-questionnaire-item oe-questionnaire-question';
+                    this.nodes.set(key, cell);
+                    const control = this.renderInput(child, key);
+                    const headingId = tableId + '-col-' + columnIndex;
+                    const single = control.querySelector('#' + safeId(key));
+                    if (single) {
+                        single.setAttribute('aria-labelledby', headingId);
+                        if (child.required === true) {
+                            single.setAttribute('aria-required', 'true');
+                        }
+                    } else if (control.querySelector('input[type="radio"], input[type="checkbox"]')) {
+                        control.setAttribute('role', control.querySelector('input[type="checkbox"]') ? 'group' : 'radiogroup');
+                        control.setAttribute('aria-labelledby', headingId);
+                    }
+                    cell.appendChild(control);
+                });
+                const actions = row.insertCell();
+                if (item.readOnly !== true && count > minOccurs) {
+                    const removeButton = document.createElement('button');
+                    removeButton.type = 'button';
+                    removeButton.className = 'btn btn-sm btn-link text-danger oe-questionnaire-repeat-remove py-0';
+                    removeButton.textContent = this.runtime.t('remove');
+                    removeButton.addEventListener('click', () => {
+                        this.runtime.responseStore.removeRepeatInstance(storageKey, instanceIndex);
+                        rerender();
+                        this.runtime.notifyStructureChanged();
+                    });
+                    actions.appendChild(removeButton);
+                }
+            }
+            const scroll = document.createElement('div');
+            scroll.className = 'table-responsive';
+            scroll.appendChild(table);
+            return scroll;
         }
 
         renderRepeatingGroup(item, wrapper, keyPrefix) {
@@ -4463,8 +4660,12 @@
             const rerender = () => {
                 body.replaceChildren();
                 const count = this.runtime.responseStore.getRepeatCount(storageKey);
-                for (let instanceIndex = 0; instanceIndex < count; instanceIndex++) {
-                    body.appendChild(this.renderGroupInstance(item, keyPrefix, instanceIndex, count, minOccurs, rerender));
+                if (getItemControl(item) === 'gtable') {
+                    body.appendChild(this.renderGridTable(item, keyPrefix, count, minOccurs, rerender));
+                } else {
+                    for (let instanceIndex = 0; instanceIndex < count; instanceIndex++) {
+                        body.appendChild(this.renderGroupInstance(item, keyPrefix, instanceIndex, count, minOccurs, rerender));
+                    }
                 }
                 const addButton = document.createElement('button');
                 addButton.type = 'button';
@@ -5326,7 +5527,14 @@
                     message.className = 'oe-questionnaire-error invalid-feedback d-block';
                     message.id = safeId(key) + '-error';
                     const control = node.querySelector(':scope > .oe-questionnaire-control');
-                    if (control) {
+                    if (node.tagName === 'TR') {
+                        node.querySelector(':scope > th')?.appendChild(message);
+                        for (const field of node.querySelectorAll('input')) {
+                            field.setAttribute('aria-invalid', 'true');
+                            field.setAttribute('aria-describedby', message.id);
+                            field.setAttribute('data-oeq-invalid', '');
+                        }
+                    } else if (control) {
                         control.after(message);
                         const target = control.querySelector('#' + safeId(key)) ?? (control.getAttribute('role') ? control : null);
                         if (target) {

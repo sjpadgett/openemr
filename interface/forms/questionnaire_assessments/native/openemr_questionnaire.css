@@ -296,3 +296,24 @@
 .oe-questionnaire-runtime .oe-questionnaire-slider .custom-range {
   flex: 1 1 auto;
 }
+
+/* table (questions as rows, answers as columns) and gtable (a row per repetition) */
+.oe-questionnaire-runtime .oe-questionnaire-matrix th[scope='col'],
+.oe-questionnaire-runtime .oe-questionnaire-matrix td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-matrix th[scope='row'] {
+  font-weight: normal;
+  text-align: left;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-grid td {
+  vertical-align: top;
+}
+
+/* Wide tables scroll inside their group, not the page, with or without Bootstrap's table-responsive. */
+.oe-questionnaire-runtime .oe-questionnaire-group .table-responsive {
+  overflow-x: auto;
+}
