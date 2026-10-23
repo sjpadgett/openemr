@@ -61,6 +61,12 @@ $questionnaireStrings = [
     'moreInfo' => xl('More information'),
     'referenceTo' => xl('Reference to {0} (e.g. {1}/123)'),
     'referenceType' => xl('{0} must refer to {1}'),
+    'signHere' => xl('Sign here'),
+    'signaturePad' => xl('Signature pad: draw your signature'),
+    'typeToSign' => xl('Or type your full name to sign'),
+    'clear' => xl('Clear'),
+    'signatureRequired' => xl('{0} needs a signature'),
+    'thisForm' => xl('This form'),
     'expand' => xl('Expand'),
     'collapse' => xl('Collapse'),
 ];

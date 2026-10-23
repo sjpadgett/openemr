@@ -64,11 +64,11 @@ describe('rendering-criticalExtension', () => {
 
 describe('extensions not acted on', () => {
     test('one that changes what is captured is a visible warning, once, with its first item', () => {
-        const signature = { url: CORE + 'questionnaire-signatureRequired', valueCodeableConcept: { coding: [{ code: '1.2.840.10065.1.12.1.7' }] } };
+        const candidate = { url: SDC + 'sdc-questionnaire-candidateExpression', valueExpression: { language: 'text/fhirpath', expression: "'x'" } };
         const { runtime } = setup({
             item: [
-                { linkId: 'a', type: 'string', text: 'A', extension: [signature] },
-                { linkId: 'b', type: 'string', text: 'B', extension: [signature] },
+                { linkId: 'a', type: 'string', text: 'A', extension: [candidate] },
+                { linkId: 'b', type: 'string', text: 'B', extension: [candidate] },
             ],
         });
         const warnings = codes(runtime, 'extension-unsupported');

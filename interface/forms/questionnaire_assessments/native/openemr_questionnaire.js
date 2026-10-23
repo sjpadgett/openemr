@@ -65,6 +65,12 @@
         moreInfo: 'More information',
         referenceTo: 'Reference to {0} (e.g. {1}/123)',
         referenceType: '{0} must refer to {1}',
+        signHere: 'Sign here',
+        signaturePad: 'Signature pad: draw your signature',
+        typeToSign: 'Or type your full name to sign',
+        clear: 'Clear',
+        signatureRequired: '{0} needs a signature',
+        thisForm: 'This form',
         expand: 'Expand',
         collapse: 'Collapse',
     });
@@ -163,6 +169,9 @@
         CQF_EXPRESSION: 'http://hl7.org/fhir/StructureDefinition/cqf-expression',
         ANSWER_EXPRESSION: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-answerExpression',
         ANSWER_OPTIONS_TOGGLE: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-answerOptionsToggleExpression',
+        LAUNCH_CONTEXT: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext',
+        SIGNATURE_REQUIRED: 'http://hl7.org/fhir/StructureDefinition/questionnaire-signatureRequired',
+        RESPONSE_SIGNATURE: 'http://hl7.org/fhir/StructureDefinition/questionnaireresponse-signature',
     });
 
     // cqf-expression on the item elements the runtime evaluates (_required, _readOnly, _text).
@@ -180,7 +189,6 @@
         SDC_BASE + 'sdc-questionnaire-lookupQuestionnaire',
         SDC_BASE + 'sdc-questionnaire-subQuestionnaire',
         CORE_BASE + 'cqf-expression',
-        CORE_BASE + 'questionnaire-signatureRequired',
         CORE_BASE + 'questionnaire-referenceProfile',
     ]);
     const UNSUPPORTED_PRESENTATION_EXTENSIONS = Object.freeze([
@@ -571,6 +579,20 @@
             }
             return { valueString: String(value) };
         });
+    }
+
+    // The renderer's node for a signature pad: not a linkId, so it never collides with one.
+    function signatureNodeKey(key) {
+        return INSTANCE_SEPARATOR + 'signature' + INSTANCE_SEPARATOR + key;
+    }
+
+    // UTF-8 text to and from base64, without TextEncoder (not in every embedding).
+    function utf8Base64(text) {
+        return btoa(encodeURIComponent(text).replace(/%([0-9A-F]{2})/g, (match, hex) => String.fromCharCode(Number.parseInt(hex, 16))));
+    }
+
+    function base64Utf8(data) {
+        return decodeURIComponent(Array.from(atob(data), (character) => '%' + character.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
     }
 
     // usageMode display / display-non-empty: shown when reviewing a form, not while filling it.
@@ -994,6 +1016,24 @@
 
             walk(questionnaire.item);
             this.checkExtensions(questionnaire, compiled);
+            const signatureType = (holder) => {
+                const extension = findExtension(holder, EXTENSIONS.SIGNATURE_REQUIRED);
+                return extension ? (extension.valueCodeableConcept?.coding ?? []) : null;
+            };
+            compiled.signatureRequirements = [];
+            if (signatureType(questionnaire) !== null) {
+                compiled.signatureRequirements.push({ key: '', type: signatureType(questionnaire) });
+            }
+            for (const compiledItem of compiled.items) {
+                const type = signatureType(compiledItem.item);
+                if (type !== null) {
+                    compiled.signatureRequirements.push({ key: compiledItem.linkId, type });
+                }
+            }
+            compiled.launchContextNames = findExtensions(questionnaire, EXTENSIONS.LAUNCH_CONTEXT)
+                .map((extension) => (extension?.extension ?? []).find((part) => part?.url === 'name'))
+                .map((part) => part?.valueCoding?.code ?? part?.valueId)
+                .filter((name) => typeof name === 'string' && name !== '');
 
             // Precompute, for every item, the chain of repeating-group ancestors
             // (outermost first), and for every repeating group the set of its
@@ -2408,6 +2448,21 @@
             }
         }
 
+        // SDC launchContext: the resources the host supplies
+        // (options.launchContext, by name) for the names the form declares,
+        // as %patient, %encounter, %user ... A declared name the host didn't
+        // supply is reported once, and expressions using it come out empty.
+        launchContext(runtime) {
+            const supplied = runtime.options?.launchContext ?? {};
+            const variables = {};
+            for (const name of this.compiled.launchContextNames ?? []) {
+                if (supplied[name] !== undefined && supplied[name] !== null) {
+                    variables[name] = supplied[name];
+                }
+            }
+            return variables;
+        }
+
         isInsideRepeat(compiledItem) {
             return (this.compiled.repeatAncestors.get(compiledItem.linkId) ?? []).length > 0;
         }
@@ -2419,6 +2474,7 @@
         buildEnvironment(runtime, compiledItem) {
             const resource = runtime.responseStore.buildQuestionnaireResponse((linkId) => runtime.isEnabled(linkId));
             const environment = {
+                ...this.launchContext(runtime),
                 questionnaire: this.compiled.questionnaire,
                 resource,
                 rootResource: resource,
@@ -2745,6 +2801,7 @@
         buildEnvironmentForInstance(runtime, compiledItem, nodePath) {
             const resource = runtime.responseStore.buildQuestionnaireResponse((linkId) => runtime.isEnabled(linkId));
             const environment = {
+                ...this.launchContext(runtime),
                 questionnaire: this.compiled.questionnaire,
                 resource,
                 rootResource: resource,
@@ -3008,6 +3065,19 @@
                 }
             };
             visit(this.runtime.questionnaire.item, '');
+
+            // signatureRequired: the form, or an enabled item, must be signed.
+            for (const requirement of this.runtime.compiled.signatureRequirements) {
+                const item = this.runtime.compiled.itemsByLinkId.get(requirement.key)?.item;
+                if ((requirement.key !== '' && (!item || !this.runtime.isEnabled(requirement.key))) || this.runtime.signatures.has(requirement.key)) {
+                    continue;
+                }
+                const label = requirement.key === '' ? (this.runtime.questionnaire.title || this.runtime.t('thisForm')) : (item.text || requirement.key);
+                issues.push({
+                    severity: 'error', code: 'signature-required', linkId: requirement.key || undefined,
+                    storageKey: signatureNodeKey(requirement.key), message: this.runtime.t('signatureRequired', label),
+                });
+            }
 
             return {
                 valid: !issues.some((issue) => issue.severity === 'error'),
@@ -4097,6 +4167,9 @@
             for (const item of this.runtime.questionnaire.item ?? []) {
                 fragment.appendChild(this.renderItem(item));
             }
+            if (this.runtime.compiled.signatureRequirements.some((requirement) => requirement.key === '')) {
+                fragment.appendChild(this.renderSignature(''));
+            }
             container.appendChild(fragment);
             this.refresh();
         }
@@ -4257,6 +4330,9 @@
                 wrapper.appendChild(media);
             }
             wrapper.appendChild(input);
+            if (keyPrefix === '' && this.runtime.compiled.signatureRequirements.some((requirement) => requirement.key === item.linkId)) {
+                wrapper.appendChild(this.renderSignature(item.linkId));
+            }
             for (const child of item.item ?? []) {
                 if (!isDetachedDisplay(child) && !isAdjacentDisplay(child)) {
                     wrapper.appendChild(this.renderItem(child, keyPrefix));
@@ -4354,6 +4430,99 @@
                     }
                 }
             }
+        }
+
+        // A signature for signatureRequired: drawn on a pad, or typed as a
+        // full name for anyone who can't draw one (keyboard, screen reader).
+        renderSignature(key) {
+            const box = document.createElement('div');
+            box.className = 'oe-questionnaire-signature mt-2';
+            this.nodes.set(signatureNodeKey(key), box);
+            const idBase = safeId('signature-' + (key || 'form'));
+            const heading = document.createElement('div');
+            heading.className = 'small font-weight-bold';
+            heading.id = idBase + '-heading';
+            heading.textContent = this.runtime.t('signHere');
+            const canvas = document.createElement('canvas');
+            canvas.width = 400;
+            canvas.height = 120;
+            canvas.className = 'oe-questionnaire-signature-pad border d-block';
+            canvas.setAttribute('role', 'img');
+            canvas.setAttribute('aria-label', this.runtime.t('signaturePad'));
+            const typedLabel = document.createElement('label');
+            typedLabel.className = 'small mt-1 mb-0 d-block';
+            typedLabel.htmlFor = idBase + '-typed';
+            typedLabel.textContent = this.runtime.t('typeToSign');
+            const typed = document.createElement('input');
+            typed.type = 'text';
+            typed.id = idBase + '-typed';
+            typed.className = 'form-control form-control-sm';
+            typed.autocomplete = 'name';
+            const clear = document.createElement('button');
+            clear.type = 'button';
+            clear.className = 'btn btn-sm btn-link p-0 mt-1';
+            clear.textContent = this.runtime.t('clear');
+            const existing = this.runtime.signatures.get(key);
+            const context = typeof canvas.getContext === 'function' ? (() => {
+                try {
+                    return canvas.getContext('2d');
+                } catch {
+                    return null;
+                }
+            })() : null;
+            if (existing?.sigFormat === 'text/plain') {
+                try {
+                    typed.value = base64Utf8(existing.data);
+                } catch {
+                    typed.value = '';
+                }
+            } else if (existing && context) {
+                const image = new Image();
+                image.onload = () => context.drawImage(image, 0, 0);
+                image.src = 'data:' + existing.sigFormat + ';base64,' + existing.data;
+            }
+            if (context) {
+                let drawing = false;
+                const point = (event) => {
+                    const rect = canvas.getBoundingClientRect();
+                    return [(event.clientX - rect.left) * (canvas.width / (rect.width || canvas.width)), (event.clientY - rect.top) * (canvas.height / (rect.height || canvas.height))];
+                };
+                canvas.addEventListener('pointerdown', (event) => {
+                    drawing = true;
+                    context.beginPath();
+                    context.moveTo(...point(event));
+                });
+                canvas.addEventListener('pointermove', (event) => {
+                    if (drawing) {
+                        context.lineTo(...point(event));
+                        context.stroke();
+                    }
+                });
+                const finish = () => {
+                    if (!drawing) {
+                        return;
+                    }
+                    drawing = false;
+                    typed.value = '';
+                    this.runtime.setSignature(key, { data: canvas.toDataURL('image/png').split(',')[1], sigFormat: 'image/png' });
+                };
+                canvas.addEventListener('pointerup', finish);
+                canvas.addEventListener('pointerleave', finish);
+            } else {
+                canvas.classList.add('d-none');
+            }
+            typed.addEventListener('change', () => {
+                const name = typed.value.trim();
+                context?.clearRect(0, 0, canvas.width, canvas.height);
+                this.runtime.setSignature(key, name === '' ? null : { data: utf8Base64(name), sigFormat: 'text/plain', name });
+            });
+            clear.addEventListener('click', () => {
+                context?.clearRect(0, 0, canvas.width, canvas.height);
+                typed.value = '';
+                this.runtime.setSignature(key, null);
+            });
+            box.append(heading, canvas, typedLabel, typed, clear);
+            return box;
         }
 
         // A question's prompt, unit, lower and upper display children, placed
@@ -5566,10 +5735,93 @@
             this.initialExpressionsSeeded = false;
             this.validationEngine = new ValidationEngine(this);
             this.expressionEngine = new SdcExpressionEngine(this.compiled);
+            for (const name of this.compiled.launchContextNames) {
+                if (this.options.launchContext?.[name] === undefined) {
+                    this.compiled.warnings.push({
+                        code: 'launch-context-missing',
+                        severity: 'info',
+                        message: 'The form asks for %' + name + ' (launchContext), which the host did not supply; expressions using it come out empty.',
+                    });
+                }
+            }
             this.renderer = new QuestionnaireRenderer(this);
             this.container = null;
             this.changeListeners = new Set();
+            // Signatures by requirement key ('' for the form, else the item's linkId).
+            this.signatures = new Map();
+            const loadSignature = (key, holder) => {
+                const signature = findExtension(holder, EXTENSIONS.RESPONSE_SIGNATURE)?.valueSignature;
+                if (signature && typeof signature.data === 'string') {
+                    this.signatures.set(key, { data: signature.data, sigFormat: signature.sigFormat ?? 'image/png', when: signature.when, loaded: signature });
+                }
+            };
+            for (const requirement of this.compiled.signatureRequirements) {
+                loadSignature(requirement.key, requirement.key === '' ? this.questionnaireResponse : findResponseItemByLinkId(this.questionnaireResponse, requirement.key));
+            }
             this.refreshState();
+        }
+
+        // The response item for a linkId outside any repeat, created with its
+        // parent groups when the response has none.
+        ensureResponseItem(response, linkId) {
+            const chain = [];
+            for (let cursor = linkId; cursor; cursor = this.compiled.parentByLinkId.get(cursor)) {
+                chain.unshift(cursor);
+            }
+            let level = response;
+            for (const id of chain) {
+                level.item = level.item ?? [];
+                let node = level.item.find((entry) => entry?.linkId === id);
+                if (!node) {
+                    const text = this.compiled.itemsByLinkId.get(id)?.item?.text;
+                    node = text ? { linkId: id, text } : { linkId: id };
+                    level.item.push(node);
+                }
+                level = node;
+            }
+            return level;
+        }
+
+        setSignature(key, signature) {
+            if (signature) {
+                this.signatures.set(key, { ...signature, when: new Date().toISOString() });
+            } else {
+                this.signatures.delete(key);
+            }
+            this.renderer.clearValidationState();
+            this.emitChange(null);
+        }
+
+        // questionnaireresponse-signature on the response or its item, for
+        // each requirement signed. who is the host's options.signer when it
+        // gives one, else the typed name.
+        applySignatures(response) {
+            for (const requirement of this.compiled.signatureRequirements) {
+                const signature = this.signatures.get(requirement.key);
+                let holder = requirement.key === '' ? response : findResponseItemByLinkId(response, requirement.key);
+                if (!holder && signature && this.isEnabled(requirement.key)) {
+                    // A signed item with no answer still needs its response item to carry the signature.
+                    holder = this.ensureResponseItem(response, requirement.key);
+                }
+                if (!holder) {
+                    continue;
+                }
+                holder.extension = (holder.extension ?? []).filter((extension) => extension?.url !== EXTENSIONS.RESPONSE_SIGNATURE);
+                if (!signature) {
+                    if (holder.extension.length === 0) {
+                        delete holder.extension;
+                    }
+                    continue;
+                }
+                const valueSignature = signature.loaded ?? {
+                    type: requirement.type.length > 0 ? requirement.type : [{ system: 'urn:iso-astm:E1762-95:2013', code: '1.2.840.10065.1.12.1.7', display: 'Consent Signature' }],
+                    when: signature.when,
+                    who: this.options.signer ?? { display: signature.name ?? '' },
+                    sigFormat: signature.sigFormat,
+                    data: signature.data,
+                };
+                holder.extension.push({ url: EXTENSIONS.RESPONSE_SIGNATURE, valueSignature });
+            }
         }
 
         mount(container) {
@@ -5671,6 +5923,7 @@
                 response.status = loaded === 'completed' || loaded === 'amended' ? 'amended' : 'completed';
             }
             this.applyResponseMetadata(response);
+            this.applySignatures(response);
             return response;
         }
 
