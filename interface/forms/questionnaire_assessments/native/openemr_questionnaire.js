@@ -62,6 +62,9 @@
         minValue: '{0} must be at least {1}',
         maxValue: '{0} must be at most {1}',
         maxDecimalPlaces: '{0} allows at most {1} decimal places',
+        moreInfo: 'More information',
+        expand: 'Expand',
+        collapse: 'Collapse',
     });
     const SCRIPT_STRINGS = (() => {
         try {
@@ -143,6 +146,12 @@
         MAX_SIZE: 'http://hl7.org/fhir/StructureDefinition/maxSize',
         OPTION_EXCLUSIVE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-optionExclusive',
         CRITICAL_EXTENSION: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-rendering-criticalExtension',
+        ITEM_MEDIA: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-itemMedia',
+        ITEM_ANSWER_MEDIA: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-itemAnswerMedia',
+        COLLAPSIBLE: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible',
+        COLUMN_COUNT: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-columnCount',
+        SLIDER_STEP_VALUE: 'http://hl7.org/fhir/StructureDefinition/questionnaire-sliderStepValue',
+        SUPPORT_HYPERLINK: 'http://hl7.org/fhir/StructureDefinition/questionnaire-supportHyperlink',
     });
 
     // Extensions SDC 4.0.0's Advanced Rendering and Advanced Behavior
@@ -168,17 +177,11 @@
         CORE_BASE + 'targetConstraint',
     ]);
     const UNSUPPORTED_PRESENTATION_EXTENSIONS = Object.freeze([
-        SDC_BASE + 'sdc-questionnaire-itemMedia',
-        SDC_BASE + 'sdc-questionnaire-itemAnswerMedia',
-        SDC_BASE + 'sdc-questionnaire-collapsible',
-        SDC_BASE + 'sdc-questionnaire-columnCount',
         SDC_BASE + 'sdc-questionnaire-choiceColumn',
         SDC_BASE + 'sdc-questionnaire-width',
         SDC_BASE + 'sdc-questionnaire-keyboard',
         SDC_BASE + 'sdc-questionnaire-entryMode',
         SDC_BASE + 'sdc-questionnaire-shortText',
-        CORE_BASE + 'questionnaire-sliderStepValue',
-        CORE_BASE + 'questionnaire-supportHyperlink',
         CORE_BASE + 'questionnaire-usageMode',
         CORE_BASE + 'rendering-style',
     ]);
@@ -284,6 +287,57 @@
             }
         }
         return controls;
+    }
+
+    // rendering-markdown on a primitive (_text, _prefix, _display, _valueString),
+    // which SDC's Advanced Rendering lists for titles, prefixes, item text and
+    // answer options. The plain value stays the fallback.
+    function markdownFor(holder, key) {
+        const markdown = (holder?.['_' + key]?.extension ?? []).find((extension) => extension?.url === RENDERING_MARKDOWN)?.valueMarkdown;
+        return typeof markdown === 'string' && markdown.trim() !== '' ? markdown : null;
+    }
+
+    // Inline markdown for a label (prefix kept as plain text before it), else the plain text.
+    function setInlineText(element, plain, markdown, prefix = '') {
+        if (markdown === null) {
+            element.textContent = plain;
+            return;
+        }
+        element.replaceChildren(...(prefix !== '' ? [document.createTextNode(prefix)] : []), ...parseMarkdownInline(markdown, document));
+    }
+
+    function answerOptionMarkdown(option) {
+        return markdownFor(option, 'valueString') ?? markdownFor(option?.valueCoding, 'display');
+    }
+
+    // An itemMedia / itemAnswerMedia Attachment: an image when it is one and
+    // its source is safe (http(s) url or inline data), else a link to it.
+    function mediaElement(attachment, alt) {
+        if (!attachment || typeof attachment !== 'object') {
+            return null;
+        }
+        const contentType = typeof attachment.contentType === 'string' ? attachment.contentType : '';
+        const source = typeof attachment.data === 'string' && attachment.data !== '' && /^image\//.test(contentType)
+            ? 'data:' + contentType + ';base64,' + attachment.data
+            : markdownSafeHref(attachment.url);
+        if (source === null || source.startsWith('mailto:') || source.startsWith('tel:')) {
+            return null;
+        }
+        const label = typeof attachment.title === 'string' && attachment.title !== '' ? attachment.title : alt;
+        if (contentType === '' || contentType.startsWith('image/')) {
+            const image = document.createElement('img');
+            image.className = 'oe-questionnaire-media';
+            image.src = source;
+            image.alt = label ?? '';
+            return image;
+        }
+        const link = document.createElement('a');
+        link.className = 'oe-questionnaire-media-link';
+        link.href = source;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = label || source;
+        return link;
     }
 
     // Plain display text, or GFM when the text carries the rendering-markdown
@@ -3794,6 +3848,49 @@
             return { buttons, flyover: controls.flyover ? plainDisplayText(controls.flyover) : '' };
         }
 
+        // supportHyperlink: links to more about the item, opened in a new tab.
+        supportLinks(item) {
+            return findExtensions(item, EXTENSIONS.SUPPORT_HYPERLINK)
+                .map((extension) => markdownSafeHref(extension?.valueUri ?? extension?.valueUrl))
+                .filter((href) => href !== null && /^https?:/i.test(href))
+                .map((href) => {
+                    const link = document.createElement('a');
+                    link.className = 'oe-questionnaire-support-link small ml-1';
+                    link.href = href;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                    link.textContent = this.runtime.t('moreInfo');
+                    return link;
+                });
+        }
+
+        // collapsible (default-open / default-closed): the group's header
+        // toggles its body; header and footer item controls keep a group in view.
+        applyGroupPresentation(item, wrapper, header, body) {
+            const control = getItemControl(item);
+            if (control === 'header' || control === 'footer') {
+                wrapper.classList.add('oe-questionnaire-sticky-' + control);
+            }
+            const collapsible = getTypedExtensionValue(item, EXTENSIONS.COLLAPSIBLE);
+            if (collapsible !== 'default-open' && collapsible !== 'default-closed') {
+                return;
+            }
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'btn btn-sm btn-link oe-questionnaire-collapse-toggle p-0 mr-1';
+            body.id = body.id || safeId('collapse-' + (wrapper.dataset.instanceKey ?? item.linkId));
+            toggle.setAttribute('aria-controls', body.id);
+            const set = (open) => {
+                toggle.setAttribute('aria-expanded', String(open));
+                toggle.textContent = open ? '▾' : '▸';
+                toggle.setAttribute('aria-label', this.runtime.t(open ? 'collapse' : 'expand'));
+                body.classList.toggle('d-none', !open);
+            };
+            toggle.addEventListener('click', () => set(toggle.getAttribute('aria-expanded') !== 'true'));
+            set(collapsible === 'default-open');
+            header.querySelector('.oe-questionnaire-group-title')?.prepend(toggle);
+        }
+
         applyFlyover(element, text) {
             if (text !== '') {
                 element.title = text;
@@ -3964,7 +4061,7 @@
             const label = document.createElement('label');
             label.className = 'oe-questionnaire-label font-weight-bold d-inline mb-0';
             const labelText = [item.prefix, item.text].filter(Boolean).join(item.prefix && item.text ? ' — ' : '');
-            label.textContent = labelText || item.linkId;
+            setInlineText(label, labelText || item.linkId, markdownFor(item, 'text'), item.prefix && item.text ? item.prefix + ' — ' : '');
             if (item.required === true) {
                 const required = document.createElement('span');
                 required.className = 'text-danger ml-1';
@@ -3997,11 +4094,15 @@
             }
 
             const controls = this.buildDisplayControls(item);
-            header.append(...controls.buttons);
+            header.append(...controls.buttons, ...this.supportLinks(item));
             this.applyFlyover(label, controls.flyover);
             this.applyAdjacentDisplays(item, input);
 
             wrapper.appendChild(header);
+            const media = mediaElement(getTypedExtensionValue(item, EXTENSIONS.ITEM_MEDIA), item.text);
+            if (media) {
+                wrapper.appendChild(media);
+            }
             wrapper.appendChild(input);
             for (const child of item.item ?? []) {
                 if (!isDetachedDisplay(child) && !isAdjacentDisplay(child)) {
@@ -4071,26 +4172,37 @@
             header.className = 'card-header';
             const title = document.createElement('h5');
             title.className = 'mb-1 oe-questionnaire-group-title';
-            title.appendChild(document.createTextNode(item.prefix || item.text || item.linkId));
+            const titleMarkdown = item.prefix ? markdownFor(item, 'prefix') : markdownFor(item, 'text');
+            if (titleMarkdown !== null) {
+                title.append(...parseMarkdownInline(titleMarkdown, document));
+            } else {
+                title.appendChild(document.createTextNode(item.prefix || item.text || item.linkId));
+            }
             const controls = this.buildDisplayControls(item);
-            title.append(...controls.buttons);
+            title.append(...controls.buttons, ...this.supportLinks(item));
             this.applyFlyover(title, controls.flyover);
             header.appendChild(title);
             if (item.prefix && item.text) {
                 const description = document.createElement('div');
                 description.className = 'small text-muted';
-                description.textContent = item.text;
+                setInlineText(description, item.text, markdownFor(item, 'text'));
                 header.appendChild(description);
+            }
+            const media = mediaElement(getTypedExtensionValue(item, EXTENSIONS.ITEM_MEDIA), item.text);
+            if (media) {
+                header.appendChild(media);
             }
             return header;
         }
 
         renderGroup(item, wrapper, keyPrefix = '') {
             wrapper.classList.add('card', 'mb-3', 'oe-questionnaire-group');
-            wrapper.appendChild(this.buildGroupHeader(item));
+            const header = this.buildGroupHeader(item);
+            wrapper.appendChild(header);
 
             const body = document.createElement('div');
             body.className = 'card-body';
+            this.applyGroupPresentation(item, wrapper, header, body);
             for (const child of item.item ?? []) {
                 if (isDetachedDisplay(child)) {
                     continue;
@@ -4105,11 +4217,13 @@
             const storageKey = keyPrefix + item.linkId;
             wrapper.classList.add('card', 'mb-3', 'oe-questionnaire-group', 'oe-questionnaire-repeating-group');
 
-            wrapper.appendChild(this.buildGroupHeader(item));
+            const header = this.buildGroupHeader(item);
+            wrapper.appendChild(header);
 
             const body = document.createElement('div');
             body.className = 'card-body';
             wrapper.appendChild(body);
+            this.applyGroupPresentation(item, wrapper, header, body);
 
             const minOccurs = Math.max(getIntegerExtension(item, EXTENSIONS.MIN_OCCURS) ?? 1, 1);
             const maxOccurs = getIntegerExtension(item, EXTENSIONS.MAX_OCCURS);
@@ -4198,8 +4312,17 @@
             }
             const text = document.createElement('span');
             text.className = 'oe-questionnaire-display-text';
-            text.textContent = item.text ?? '';
+            const markdown = markdownFor(item, 'text');
+            if (markdown !== null) {
+                text.appendChild(renderMarkdown(markdown, document));
+            } else {
+                text.textContent = item.text ?? '';
+            }
             display.appendChild(text);
+            const media = mediaElement(getTypedExtensionValue(item, EXTENSIONS.ITEM_MEDIA), item.text);
+            if (media) {
+                display.appendChild(media);
+            }
             wrapper.appendChild(display);
             return wrapper;
         }
@@ -4268,8 +4391,16 @@
             const useRadios = !useCheckboxes && (control === 'radio-button' || (control !== 'drop-down' && control !== 'spinner' && options.length <= 6));
 
             const orientation = getChoiceOrientation(item);
+            if (control === 'autocomplete' && !repeats) {
+                return this.renderAutocomplete(item, container, options, selected, inputId, allowOpenChoice, storageKey);
+            }
             if (useCheckboxes || useRadios) {
                 const inputType = useCheckboxes ? 'checkbox' : 'radio';
+                const columns = getIntegerExtension(item, EXTENSIONS.COLUMN_COUNT);
+                if (columns !== null && columns > 1 && orientation !== 'horizontal') {
+                    container.classList.add('oe-questionnaire-columns');
+                    container.style.columnCount = String(columns);
+                }
                 options.forEach((option, index) => {
                     const optionAnswer = getAnswerOptionValue(option);
                     if (!optionAnswer) return;
@@ -4315,8 +4446,14 @@
                     const label = document.createElement('label');
                     label.className = 'custom-control-label oe-questionnaire-choice-label';
                     label.htmlFor = input.id;
-                    label.textContent = answerOptionLabel(option, optionAnswer);
-                    label.title = label.textContent;
+                    const plainLabel = answerOptionLabel(option, optionAnswer);
+                    const optionPrefix = plainLabel.slice(0, plainLabel.length - answerDisplay(optionAnswer).length);
+                    setInlineText(label, plainLabel, answerOptionMarkdown(option), optionPrefix);
+                    label.title = plainLabel;
+                    const answerMedia = mediaElement(getTypedExtensionValue(option, EXTENSIONS.ITEM_ANSWER_MEDIA), plainLabel);
+                    if (answerMedia) {
+                        label.appendChild(answerMedia);
+                    }
                     row.append(input, label);
                     container.appendChild(row);
                 });
@@ -4384,6 +4521,49 @@
             return container;
         }
 
+        // autocomplete: "a list of potential matches based on text entered",
+        // for long answer lists. The typed text is matched to an option's
+        // label; an open choice keeps unmatched text as its own answer.
+        renderAutocomplete(item, container, options, selected, inputId, allowOpenChoice, storageKey) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = inputId;
+            input.className = 'form-control oe-questionnaire-autocomplete';
+            input.autocomplete = 'off';
+            input.disabled = item.readOnly === true;
+            const list = document.createElement('datalist');
+            list.id = inputId + '-options';
+            input.setAttribute('list', list.id);
+            const labelled = options.map((option) => ({ option, answer: getAnswerOptionValue(option) }))
+                .filter((entry) => entry.answer !== null)
+                .map((entry) => ({ ...entry, label: answerOptionLabel(entry.option, entry.answer) }));
+            for (const entry of labelled) {
+                const element = document.createElement('option');
+                element.value = entry.label;
+                list.appendChild(element);
+            }
+            const current = labelled.find((entry) => selected.some((answer) => answer.valueKey === entry.answer.valueKey && equalPrimitive(answer.value, entry.answer.value)));
+            const custom = selected.find((answer) => answer.valueKey === 'valueString');
+            input.value = current?.label ?? (allowOpenChoice ? custom?.value ?? '' : '');
+            input.addEventListener('change', () => {
+                const text = input.value.trim();
+                const match = labelled.find((entry) => entry.label === text)
+                    ?? labelled.find((entry) => entry.label.toLowerCase() === text.toLowerCase());
+                if (text === '') {
+                    this.runtime.setAnswers(storageKey, []);
+                } else if (match) {
+                    this.runtime.setAnswers(storageKey, [match.answer]);
+                } else if (allowOpenChoice) {
+                    this.runtime.setAnswers(storageKey, [{ valueKey: 'valueString', value: text }]);
+                } else {
+                    this.runtime.setAnswers(storageKey, []);
+                }
+            });
+            container.append(input, list);
+            this.inputs.set(storageKey, container);
+            return container;
+        }
+
         renderBoolean(item, container, answers, inputId, storageKey = item.linkId) {
             const selected = firstValue(answers)?.value;
             [
@@ -4417,6 +4597,11 @@
         }
 
         renderNumber(item, container, answers, inputId, storageKey = item.linkId) {
+            const sliderMin = getTypedExtensionValue(item, EXTENSIONS.MIN_VALUE);
+            const sliderMax = getTypedExtensionValue(item, EXTENSIONS.MAX_VALUE);
+            if (getItemControl(item) === 'slider' && typeof sliderMin === 'number' && typeof sliderMax === 'number') {
+                return this.renderSlider(item, container, answers, inputId, storageKey, sliderMin, sliderMax);
+            }
             const inputGroup = document.createElement('div');
             inputGroup.className = getQuestionnaireUnit(item) ? 'input-group' : '';
             const input = document.createElement('input');
@@ -4451,6 +4636,42 @@
                 inputGroup.appendChild(append);
             }
             container.appendChild(inputGroup);
+            this.inputs.set(storageKey, input);
+            return container;
+        }
+
+        // slider: a range between minValue and maxValue, stepped by
+        // sliderStepValue (1 by default). Nothing is answered until the
+        // slider is moved; the current value is shown beside it.
+        renderSlider(item, container, answers, inputId, storageKey, min, max) {
+            const row = document.createElement('div');
+            row.className = 'oe-questionnaire-slider d-flex align-items-center';
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.id = inputId;
+            input.className = 'custom-range';
+            input.min = String(min);
+            input.max = String(max);
+            const step = getTypedExtensionValue(item, EXTENSIONS.SLIDER_STEP_VALUE);
+            input.step = typeof step === 'number' && step > 0 ? String(step) : (item.type === 'integer' ? '1' : 'any');
+            const current = firstValue(answers)?.value;
+            input.value = typeof current === 'number' ? String(current) : String(min);
+            input.disabled = item.readOnly === true;
+            const output = document.createElement('output');
+            output.className = 'ml-2 oe-questionnaire-slider-value';
+            output.htmlFor = inputId;
+            output.textContent = typeof current === 'number' ? String(current) : '–';
+            const commit = () => {
+                const value = item.type === 'integer' ? Number.parseInt(input.value, 10) : Number.parseFloat(input.value);
+                output.textContent = String(value);
+                this.runtime.setAnswers(storageKey, Number.isFinite(value) ? [{ valueKey: this.runtime.answerValueKeyForItem(item), value }] : []);
+            };
+            input.addEventListener('change', commit);
+            input.addEventListener('input', () => {
+                output.textContent = input.value;
+            });
+            row.append(input, output);
+            container.appendChild(row);
             this.inputs.set(storageKey, input);
             return container;
         }

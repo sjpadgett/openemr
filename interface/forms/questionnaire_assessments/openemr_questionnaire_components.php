@@ -58,6 +58,9 @@ $questionnaireStrings = [
     'minValue' => xl('{0} must be at least {1}'),
     'maxValue' => xl('{0} must be at most {1}'),
     'maxDecimalPlaces' => xl('{0} allows at most {1} decimal places'),
+    'moreInfo' => xl('More information'),
+    'expand' => xl('Expand'),
+    'collapse' => xl('Collapse'),
 ];
 ?>
 <link href="<?php echo attr($questionnaireStylesheet); ?>" media="screen" rel="stylesheet" />

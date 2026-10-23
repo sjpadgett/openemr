@@ -262,3 +262,37 @@
 .oe-questionnaire-runtime .oe-questionnaire-scale > .custom-control {
   margin-bottom: 0;
 }
+
+/* itemMedia / itemAnswerMedia */
+.oe-questionnaire-runtime .oe-questionnaire-media {
+  display: block;
+  height: auto;
+  margin: 0.25rem 0;
+  max-height: 16rem;
+  max-width: 100%;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-choice-label .oe-questionnaire-media {
+  max-height: 4rem;
+}
+
+/* header and footer item controls keep the group in view */
+.oe-questionnaire-runtime .oe-questionnaire-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-sticky-footer {
+  bottom: 0;
+  position: sticky;
+  z-index: 2;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-columns > .custom-control {
+  break-inside: avoid;
+}
+
+.oe-questionnaire-runtime .oe-questionnaire-slider .custom-range {
+  flex: 1 1 auto;
+}
