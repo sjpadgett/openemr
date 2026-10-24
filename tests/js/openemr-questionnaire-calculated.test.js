@@ -406,3 +406,104 @@ describe('calculated expressions: resilience', () => {
         expect(answerOf(runtime, 'cql-item')).toBeUndefined();
     });
 });
+
+describe('calculated expressions: answering over a calculation (SDC 4.0.0 Using Expressions)', () => {
+    const typeInto = (container, linkId, value) => {
+        const input = container.querySelector('[data-link-id="' + linkId + '"] input');
+        input.value = value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const doubled = [
+        { linkId: 'a', type: 'integer', text: 'A' },
+        { linkId: 'double', type: 'integer', text: 'Double (editable)', extension: calculated(answerPath('a', 'valueInteger') + ' * 2') },
+    ];
+
+    test('a value typed over an editable calculation stays as other answers change', () => {
+        const { container, runtime } = mountItems(doubled);
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 2 }]);
+        expect(answerOf(runtime, 'double').valueInteger).toBe(4);
+        typeInto(container, 'double', '9');
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 3 }]);
+        expect(answerOf(runtime, 'double').valueInteger).toBe(9);
+        expect(container.querySelector('[data-link-id="double"] input').value).toBe('9');
+    });
+
+    test('clearing the typed value hands the item back to its calculation', () => {
+        const { container, runtime } = mountItems(doubled);
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 2 }]);
+        typeInto(container, 'double', '9');
+        typeInto(container, 'double', '');
+        expect(answerOf(runtime, 'double').valueInteger).toBe(4);
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 5 }]);
+        expect(answerOf(runtime, 'double').valueInteger).toBe(10);
+    });
+
+    test('a measurement the calculation cannot supply is kept when typed, and conditions on it work', () => {
+        // The shape of WHO's respiratory rate questions: taken from a profile value when the
+        // host has one, else counted and typed in.
+        const rateExtensions = [
+            { url: 'http://hl7.org/fhir/StructureDefinition/questionnaire-unit', valueCoding: { system: 'http://unitsofmeasure.org', code: '{Breaths}/min', display: 'breaths/min' } },
+            ...calculated("iif(%resource.item.where(linkId='profile').answer.exists(), %resource.item.where(linkId='profile').answer.value, {})"),
+        ];
+        const { container, runtime } = mountItems([
+            { linkId: 'profile', type: 'quantity', text: 'Rate on file', readOnly: true },
+            { linkId: 'rate', type: 'quantity', text: 'Breathing rate', extension: rateExtensions },
+            {
+                linkId: 'fast', type: 'display', text: 'Fast breathing',
+                extension: [{ url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-enableWhenExpression', valueExpression: { language: 'text/fhirpath', expression: "%resource.item.where(linkId='rate').answer.value >= 60 '{Breaths}/min'" } }],
+            },
+        ]);
+        container.querySelector('[data-link-id="rate"] input[type="number"]').value = '70';
+        container.querySelector('[data-link-id="rate"] input[type="number"]').dispatchEvent(new Event('change', { bubbles: true }));
+        expect(answerOf(runtime, 'rate').valueQuantity).toEqual({ value: 70, unit: 'breaths/min', system: 'http://unitsofmeasure.org', code: '{Breaths}/min' });
+        expect(runtime.isEnabled('fast')).toBe(true);
+    });
+
+    test('a calculated quantity shows its number in the value box', () => {
+        const { container, runtime } = mountItems([
+            { linkId: 'kg', type: 'decimal', text: 'Weight in kg' },
+            {
+                linkId: 'w', type: 'quantity', text: 'Weight', readOnly: true,
+                extension: calculated("%resource.item.where(linkId='kg').answer.value * 1 'kg'"),
+            },
+        ]);
+        runtime.setAnswers('kg', [{ valueKey: 'valueDecimal', value: 70 }]);
+        expect(answerOf(runtime, 'w').valueQuantity.value).toBe(70);
+        expect(container.querySelector('[data-link-id="w"] input[type="number"]').value).toBe('70');
+    });
+
+    test('a saved response whose editable calculated answer differs from the calculation keeps it', () => {
+        const container = createContainer();
+        const runtime = runtimeApi.mount({
+            questionnaire: baseQuestionnaire(doubled),
+            questionnaireResponse: { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [
+                { linkId: 'a', answer: [{ valueInteger: 2 }] },
+                { linkId: 'double', answer: [{ valueInteger: 9 }] },
+            ] },
+            container,
+        });
+        expect(answerOf(runtime, 'double').valueInteger).toBe(9);
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 3 }]);
+        expect(answerOf(runtime, 'double').valueInteger).toBe(9);
+    });
+
+    test('a saved response whose calculated answers match keeps calculating, and read-only ones always do', () => {
+        const container = createContainer();
+        const runtime = runtimeApi.mount({
+            questionnaire: baseQuestionnaire([
+                ...doubled,
+                { linkId: 'total', type: 'integer', text: 'Total', readOnly: true, extension: calculated(answerPath('a', 'valueInteger') + ' + 1') },
+            ]),
+            questionnaireResponse: { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [
+                { linkId: 'a', answer: [{ valueInteger: 2 }] },
+                { linkId: 'double', answer: [{ valueInteger: 4 }] },
+                { linkId: 'total', answer: [{ valueInteger: 99 }] },
+            ] },
+            container,
+        });
+        expect(answerOf(runtime, 'total').valueInteger).toBe(3);
+        runtime.setAnswers('a', [{ valueKey: 'valueInteger', value: 5 }]);
+        expect(answerOf(runtime, 'double').valueInteger).toBe(10);
+        expect(answerOf(runtime, 'total').valueInteger).toBe(6);
+    });
+});

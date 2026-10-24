@@ -2772,12 +2772,39 @@
             return issues;
         }
 
+        // Whether a stored answer to a calculated item is one someone gave over the calculation.
+        // On the first pass over a loaded response, SDC's test: an item a person could edit whose
+        // stored answer differs from what the calculation gives now. Afterwards, what setAnswers
+        // recorded.
+        isCalculationOverridden(runtime, compiledItem, storageKey, value, firstPassOnLoad) {
+            if (runtime.calculationOverrides.has(storageKey)) {
+                return true;
+            }
+            if (!firstPassOnLoad || !runtime.isCalculationEditable(compiledItem) || !runtime.responseStore.hasAnswers(storageKey)) {
+                return false;
+            }
+            const stored = firstValue(runtime.responseStore.getAnswers(storageKey))?.value;
+            const same = isQuantity(stored) && isQuantity(value)
+                ? stored.value === value.value && quantityUnit(stored) === quantityUnit(value)
+                : JSON.stringify(stored) === JSON.stringify(value);
+            if (same) {
+                return false;
+            }
+            runtime.calculationOverrides.add(storageKey);
+            return true;
+        }
+
         recalculate(runtime) {
+            const firstPassOnLoad = runtime.questionnaireResponse !== null && this.overridesLoaded !== true;
+            this.overridesLoaded = true;
             for (const compiledItem of this.compiled.calculatedItems) {
                 if (this.isInsideRepeat(compiledItem)) {
                     // Repeat descendants are evaluated per instance in
                     // recalculateInstances so each instance writes to its own
                     // storage key; skip the canonical pass here.
+                    continue;
+                }
+                if (runtime.calculationOverrides.has(compiledItem.linkId)) {
                     continue;
                 }
                 const item = compiledItem.item;
@@ -2794,6 +2821,9 @@
                 try {
                     const result = this.evaluator.evaluate(calculatedAst, environment, null);
                     const value = firstValue(result);
+                    if (this.isCalculationOverridden(runtime, compiledItem, compiledItem.linkId, value, firstPassOnLoad)) {
+                        continue;
+                    }
                     if (value === undefined) {
                         runtime.responseStore.clearAnswer(compiledItem.linkId);
                         continue;
@@ -2811,23 +2841,26 @@
                     });
                 }
             }
-            this.recalculateInstances(runtime);
+            this.recalculateInstances(runtime, firstPassOnLoad);
         }
 
         // Per-instance calculatedExpression for descendants of repeating groups.
         // Each instance writes to its own instance-qualified storage key so the
         // value renders and serializes for that instance (canonical items are
         // handled above and never enter this walk).
-        recalculateInstances(runtime) {
+        recalculateInstances(runtime, firstPassOnLoad = false) {
             this.walkRepeatInstances(runtime, (compiledItem, storageKey, nodePath) => {
                 const calculatedExpression = compiledItem.calculatedExpression;
                 const ast = calculatedExpression && this.compiledExpressions.get(calculatedExpression);
-                if (!ast) {
+                if (!ast || runtime.calculationOverrides.has(storageKey)) {
                     return;
                 }
                 try {
                     const environment = this.buildEnvironmentForInstance(runtime, compiledItem, nodePath);
                     const value = firstValue(this.evaluator.evaluate(ast, environment, null));
+                    if (this.isCalculationOverridden(runtime, compiledItem, storageKey, value, firstPassOnLoad)) {
+                        return;
+                    }
                     if (value === undefined) {
                         runtime.responseStore.clearAnswer(storageKey);
                         return;
@@ -5789,7 +5822,9 @@
             // repeat-instance items (group\0index\0child) refresh from their own
             // stored value.
             const calculatedLinkIds = new Set(this.runtime.compiled.calculatedItems.map((compiledItem) => compiledItem.linkId));
-            for (const [storageKey, input] of this.inputs) {
+            for (const [storageKey, entry] of this.inputs) {
+                // A quantity registers its row; its number box is the one to refresh.
+                const input = entry instanceof HTMLInputElement ? entry : entry?.querySelector?.('input[type="number"]');
                 if (!(input instanceof HTMLInputElement)) {
                     continue;
                 }
@@ -5797,7 +5832,8 @@
                 if (!calculatedLinkIds.has(linkId)) {
                     continue;
                 }
-                input.value = firstValue(this.runtime.responseStore.getAnswers(storageKey))?.value ?? '';
+                const value = firstValue(this.runtime.responseStore.getAnswers(storageKey))?.value;
+                input.value = isQuantity(value) ? value.value : (value ?? '');
             }
         }
 
@@ -5890,6 +5926,10 @@
             this.renderer = new QuestionnaireRenderer(this);
             this.container = null;
             this.changeListeners = new Set();
+            // Storage keys of calculated items someone answered over. SDC 4.0.0 (Using
+            // Expressions, calculatedExpression): "If a user has edited a calculated value, it
+            // SHOULD no longer be changed when other answers in the questionnaire response change."
+            this.calculationOverrides = new Set();
             // Signatures by requirement key ('' for the form, else the item's linkId).
             this.signatures = new Map();
             const loadSignature = (key, holder) => {
@@ -6000,7 +6040,24 @@
             }[item.type] ?? 'valueString';
         }
 
+        // Whether a person filling the form could answer over this calculated item: it is shown
+        // and not read-only (as readOnlyExpression says, else as item.readOnly).
+        isCalculationEditable(compiledItem) {
+            const readOnly = this.dynamicState?.get(compiledItem.linkId)?.readOnly ?? compiledItem.item.readOnly === true;
+            return !compiledItem.hidden && readOnly !== true;
+        }
+
         setAnswers(linkId, answers) {
+            // An answer given to a calculated item a person can edit stops its calculation;
+            // clearing it resumes it.
+            const compiledItem = this.compiled.itemsByLinkId.get(String(linkId).split(INSTANCE_SEPARATOR).pop());
+            if (compiledItem?.calculatedExpression && this.isCalculationEditable(compiledItem)) {
+                if (answers.length > 0) {
+                    this.calculationOverrides.add(linkId);
+                } else {
+                    this.calculationOverrides.delete(linkId);
+                }
+            }
             this.responseStore.setAnswers(linkId, answers);
             this.refreshState();
             this.renderer.refresh();
