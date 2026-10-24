@@ -6134,7 +6134,8 @@
     }
 
     global.OpenEMRQuestionnaire = {
-        version: '0.2.0',
+        // Raised when the runtime gains what a host or a form may test for (0.3.0: the SDC and R4 additions of #14744).
+        version: '0.3.0',
         EXTENSIONS,
         DEFAULT_STRINGS,
         QuestionnaireCompiler,
