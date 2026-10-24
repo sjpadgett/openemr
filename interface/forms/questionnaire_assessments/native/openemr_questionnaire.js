@@ -492,14 +492,54 @@
         return options;
     }
 
+    // A ValueSet's compose read without a terminology service: only when every include lists
+    // its concepts (no filter, no whole code system, no other value set). Excluded concepts are
+    // left out. Anything else gives no options.
+    function composeToAnswerOptions(valueSet) {
+        const includes = valueSet?.compose?.include ?? [];
+        if (includes.length === 0 || includes.some((include) => !Array.isArray(include?.concept) || include.filter || include.valueSet)) {
+            return [];
+        }
+        const excluded = new Set((valueSet.compose.exclude ?? []).flatMap((exclude) => (exclude?.concept ?? [])
+            .map((concept) => (exclude.system ?? '') + '|' + concept?.code)));
+        const options = [];
+        for (const include of includes) {
+            for (const concept of include.concept) {
+                if (concept?.code === undefined || excluded.has((include.system ?? '') + '|' + concept.code)) {
+                    continue;
+                }
+                const coding = {};
+                if (typeof include.system === 'string') {
+                    coding.system = include.system;
+                }
+                if (typeof include.version === 'string') {
+                    coding.version = include.version;
+                }
+                coding.code = concept.code;
+                if (typeof concept.display === 'string') {
+                    coding.display = concept.display;
+                }
+                if (Array.isArray(concept.extension)) {
+                    coding.extension = deepClone(concept.extension);
+                }
+                options.push({ valueCoding: coding });
+            }
+        }
+        return options;
+    }
+
+    function valueSetToAnswerOptions(valueSet) {
+        return valueSet?.expansion ? expansionToAnswerOptions(valueSet) : composeToAnswerOptions(valueSet);
+    }
+
     function resolveAnswerOptions(item, questionnaire) {
         if (Array.isArray(item.answerOption) && item.answerOption.length > 0) {
             return item.answerOption;
         }
         if (typeof item.answerValueSet === 'string' && item.answerValueSet !== '') {
             const valueSet = containedResourceById(questionnaire, item.answerValueSet);
-            if (valueSet && valueSet.resourceType === 'ValueSet' && valueSet.expansion) {
-                return expansionToAnswerOptions(valueSet);
+            if (valueSet && valueSet.resourceType === 'ValueSet') {
+                return valueSetToAnswerOptions(valueSet);
             }
         }
         return Array.isArray(item.answerOption) ? item.answerOption : [];
@@ -1202,7 +1242,7 @@
                                 code: 'unresolved-answer-value-set',
                                 linkId,
                                 message: 'answerValueSet "' + item.answerValueSet
-                                    + '" could not be resolved; only contained, pre-expanded ValueSets (referenced by #id) are supported.',
+                                    + '" could not be resolved; only contained ValueSets (referenced by #id) with an expansion, or a compose that lists its concepts, are supported.',
                             });
                         }
                     }
@@ -5727,7 +5767,7 @@
             const unitValueSet = containedResourceById(this.runtime.questionnaire, getTypedExtensionValue(item, EXTENSIONS.UNIT_VALUE_SET));
             let unitOptions = [
                 ...findExtensions(item, EXTENSIONS.UNIT_OPTION).map((extension) => extension?.valueCoding),
-                ...(unitValueSet?.resourceType === 'ValueSet' ? expansionToAnswerOptions(unitValueSet).map((option) => option.valueCoding) : []),
+                ...(unitValueSet?.resourceType === 'ValueSet' ? valueSetToAnswerOptions(unitValueSet).map((option) => option.valueCoding) : []),
             ].filter((coding) => coding && (typeof coding.code === 'string' || typeof coding.display === 'string'));
             // With no unit options, a lone questionnaire-unit is the question's one unit, so the
             // answer carries it and comparisons in that unit work. R4 defines questionnaire-unit
