@@ -484,3 +484,51 @@ describe('repeating boolean, quantity and attachment questions', () => {
         expect(answersOf(runtime, 'f').map((answer) => answer.valueAttachment.title)).toEqual(['a.txt', 'b.txt']);
     });
 });
+
+describe('expressions evaluated per repetition', () => {
+    const SDC = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/';
+    const CQF = 'http://hl7.org/fhir/StructureDefinition/cqf-expression';
+    const fhirpath = (expression) => ({ language: 'text/fhirpath', expression });
+    const pickBoolean = (instanceNode, linkId, yes) => {
+        const radio = instanceNode.querySelectorAll('[data-link-id="' + linkId + '"] input[type="radio"]')[yes ? 0 : 1];
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const twoInstances = (items) => {
+        const { container, runtime } = mount([{ linkId: 'g', type: 'group', text: 'Person', repeats: true, item: items }]);
+        const groupNode = container.querySelector('[data-link-id="g"]');
+        groupNode.querySelector(':scope > .card-body > .oe-questionnaire-repeat-add').click();
+        return { container, runtime, instances: () => directInstances(groupNode) };
+    };
+
+    test('answerExpression gives each repetition its own options', () => {
+        const { instances } = twoInstances([
+            { linkId: 'adult', type: 'boolean', text: 'Adult?' },
+            {
+                linkId: 'drink', type: 'choice', text: 'Drink',
+                extension: [{ url: SDC + 'sdc-questionnaire-answerExpression', valueExpression: fhirpath("iif(%context.item.where(linkId = 'adult').answer.value = true, 'Coffee' | 'Tea', 'Milk' | 'Juice')") }],
+            },
+        ]);
+        pickBoolean(instances()[0], 'adult', true);
+        pickBoolean(instances()[1], 'adult', false);
+        const labels = (instanceNode) => [...instanceNode.querySelectorAll('[data-link-id="drink"] .oe-questionnaire-choice-label')].map((label) => label.textContent);
+        expect(labels(instances()[0])).toEqual(['Coffee', 'Tea']);
+        expect(labels(instances()[1])).toEqual(['Milk', 'Juice']);
+    });
+
+    test('a required expression is evaluated for each repetition', () => {
+        const { runtime, instances } = twoInstances([
+            { linkId: 'smoker', type: 'boolean', text: 'Smokes?' },
+            {
+                linkId: 'packs', type: 'integer', text: 'Packs a day',
+                _required: { extension: [{ url: CQF, valueExpression: fhirpath("%context.item.where(linkId = 'smoker').answer.value = true") }] },
+            },
+        ]);
+        pickBoolean(instances()[0], 'smoker', true);
+        pickBoolean(instances()[1], 'smoker', false);
+        const required = runtime.validate().issues.filter((issue) => issue.code === 'required' && issue.linkId === 'packs');
+        expect(required).toHaveLength(1);
+        expect(instances()[0].querySelector('[data-link-id="packs"] .text-danger')).not.toBeNull();
+        expect(instances()[1].querySelector('[data-link-id="packs"] .text-danger')).toBeNull();
+    });
+});

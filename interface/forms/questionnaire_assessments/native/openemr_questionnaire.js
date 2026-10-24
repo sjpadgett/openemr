@@ -2866,6 +2866,9 @@
                 resource,
                 rootResource: resource,
                 context: resource,
+                // SDC's %qitem: the Questionnaire item the expression is on (for a variable, the
+                // item that defines it).
+                qitem: compiledItem.item,
             };
             // Evaluate variables in scope (ancestor-defined first, then self), so
             // a variable defined on a group is available to descendant
@@ -2881,6 +2884,7 @@
                 const definingContext = findResponseItemByLinkId(resource, definingLinkId) ?? resource;
                 try {
                     environment.context = definingContext;
+                    environment.qitem = this.compiled.itemsByLinkId.get(definingLinkId)?.item;
                     environment[expression.name] = this.evaluator.evaluate(ast, environment, definingContext);
                 } catch (error) {
                     this.warnings.push({
@@ -2893,6 +2897,7 @@
             }
             // Restore %context to the resource for the consuming expression.
             environment.context = resource;
+            environment.qitem = compiledItem.item;
             return environment;
         }
 
@@ -2951,13 +2956,13 @@
             }
         }
 
-        evaluateFor(runtime, compiledItem, expression) {
+        evaluateFor(runtime, compiledItem, expression, environment = null) {
             const ast = expression && this.compiledExpressions.get(expression);
             if (!ast) {
                 return null;
             }
             try {
-                return this.evaluator.evaluate(ast, this.buildEnvironment(runtime, compiledItem), null);
+                return this.evaluator.evaluate(ast, environment ?? this.buildEnvironment(runtime, compiledItem), null);
             } catch (error) {
                 this.warnings.push({
                     code: 'fhirpath-evaluate-error',
@@ -2971,33 +2976,45 @@
 
         // Required, read-only and text by expression, answers by
         // answerExpression, and which options answerOptionsToggleExpression
-        // turns off, for each item that has them. Evaluated against the
-        // whole response, as for an item outside any repeat.
+        // turns off, for each item that has them: by linkId against the whole
+        // response, and, inside repeating groups, by storage key for each
+        // repetition, with %context its own instance (as enableWhen and
+        // calculations are).
         evaluateDynamic(runtime) {
             const state = new Map();
-            for (const compiledItem of this.compiled.expressionItems) {
+            const evaluateItem = (compiledItem, environment) => {
                 const { requiredExpression, readOnlyExpression, textExpression, answerExpression, optionToggles } = compiledItem;
-                if (!requiredExpression && !readOnlyExpression && !textExpression && !answerExpression && optionToggles.length === 0) {
-                    continue;
-                }
                 const boolean = (expression) => {
-                    const result = expression ? this.evaluateFor(runtime, compiledItem, expression) : null;
+                    const result = expression ? this.evaluateFor(runtime, compiledItem, expression, environment) : null;
                     return result === null || result.length === 0 ? null : collectionBoolean(result);
                 };
-                const text = textExpression ? this.evaluateFor(runtime, compiledItem, textExpression) : null;
-                const answers = answerExpression ? this.evaluateFor(runtime, compiledItem, answerExpression) : null;
+                const text = textExpression ? this.evaluateFor(runtime, compiledItem, textExpression, environment) : null;
+                const answers = answerExpression ? this.evaluateFor(runtime, compiledItem, answerExpression, environment) : null;
                 const offOptions = [];
                 for (const toggle of optionToggles) {
                     if (boolean(toggle.expression) !== true) {
                         offOptions.push(...toggle.options);
                     }
                 }
-                state.set(compiledItem.linkId, {
+                return {
                     required: boolean(requiredExpression),
                     readOnly: boolean(readOnlyExpression),
                     text: text !== null && text.length > 0 ? String(text[0]) : null,
                     answerOptions: answers === null ? null : valuesToAnswerOptions(answers, compiledItem.item),
                     offOptions,
+                };
+            };
+            const dynamicItems = this.compiled.expressionItems.filter(({ requiredExpression, readOnlyExpression, textExpression, answerExpression, optionToggles }) =>
+                requiredExpression || readOnlyExpression || textExpression || answerExpression || optionToggles.length > 0);
+            for (const compiledItem of dynamicItems) {
+                state.set(compiledItem.linkId, evaluateItem(compiledItem, null));
+            }
+            const dynamicLinkIds = new Set(dynamicItems.map((compiledItem) => compiledItem.linkId));
+            if (dynamicLinkIds.size > 0) {
+                this.walkRepeatInstances(runtime, (compiledItem, storageKey, nodePath) => {
+                    if (dynamicLinkIds.has(compiledItem.linkId)) {
+                        state.set(storageKey, evaluateItem(compiledItem, this.buildEnvironmentForInstance(runtime, compiledItem, nodePath)));
+                    }
                 });
             }
             return state;
@@ -3226,6 +3243,7 @@
                 resource,
                 rootResource: resource,
                 context: resource,
+                qitem: compiledItem.item,
             };
             // Descend the response in lockstep with nodePath, recording each
             // enclosing group's instance node. For a repeating group pick the
@@ -3254,6 +3272,7 @@
                 const definingContext = groupNodes.get(definingLinkId) ?? findResponseItemByLinkId(resource, definingLinkId) ?? resource;
                 try {
                     environment.context = definingContext;
+                    environment.qitem = this.compiled.itemsByLinkId.get(definingLinkId)?.item;
                     environment[expression.name] = this.evaluator.evaluate(ast, environment, definingContext);
                 } catch (error) {
                     this.warnings.push({
@@ -3267,6 +3286,7 @@
             // %context for the consuming expression is the item's innermost
             // enclosing repeat-instance node (the whole resource if unresolved).
             environment.context = instanceNode ?? resource;
+            environment.qitem = compiledItem.item;
             return environment;
         }
     }
@@ -3525,7 +3545,7 @@
 
             const minOccurs = getIntegerExtension(item, EXTENSIONS.MIN_OCCURS);
             const maxOccurs = getIntegerExtension(item, EXTENSIONS.MAX_OCCURS);
-            const requiredCount = minOccurs !== null ? minOccurs : (this.runtime.isRequired(compiledItem.linkId, item) ? 1 : 0);
+            const requiredCount = minOccurs !== null ? minOccurs : (this.runtime.isRequired(storageKey, item) ? 1 : 0);
             if (requiredCount > 0 && answers.length < requiredCount) {
                 add('error', minOccurs !== null ? 'min-occurs' : 'required',
                     requiredCount === 1 ? this.runtime.t('requiresValue', label) : this.runtime.t('requiresAtLeast', label, requiredCount));
@@ -4798,9 +4818,9 @@
         // rebuilt when it changes) and options turned off by
         // answerOptionsToggleExpression.
         applyDynamicState() {
-            for (const [linkId, state] of this.runtime.dynamicState ?? []) {
-                const node = this.nodes.get(linkId);
-                const compiledItem = this.runtime.compiled.itemsByLinkId.get(linkId);
+            for (const [key, state] of this.runtime.dynamicState ?? []) {
+                const node = this.nodes.get(key);
+                const compiledItem = this.runtime.compiled.itemsByLinkId.get(key.split(INSTANCE_SEPARATOR).pop());
                 if (!node || !compiledItem || !node.classList.contains('oe-questionnaire-question')) {
                     continue;
                 }
@@ -4809,13 +4829,13 @@
                 let control = node.querySelector(':scope > .oe-questionnaire-control');
                 if (state.answerOptions !== null && control) {
                     const signature = JSON.stringify(state.answerOptions);
-                    if (this.dynamicRendered.has(linkId) && this.dynamicRendered.get(linkId) !== signature) {
-                        const fresh = this.renderInput(item, linkId);
+                    if (this.dynamicRendered.has(key) && this.dynamicRendered.get(key) !== signature) {
+                        const fresh = this.renderInput(item, key);
                         control.replaceWith(fresh);
                         control = fresh;
-                        this.connectLabel(item, label, fresh, safeId(linkId), this.runtime.isRequired(linkId, item));
+                        this.connectLabel(item, label, fresh, safeId(key), this.runtime.isRequired(key, item));
                     }
-                    this.dynamicRendered.set(linkId, signature);
+                    this.dynamicRendered.set(key, signature);
                 }
                 if (label && state.text !== null && label.firstChild?.nodeType === Node.TEXT_NODE) {
                     label.firstChild.textContent = [item.prefix, state.text].filter(Boolean).join(item.prefix ? ' — ' : '');
@@ -4831,7 +4851,7 @@
                     } else if (!state.required && mark) {
                         mark.remove();
                     }
-                    const target = control?.querySelector('#' + safeId(linkId)) ?? (control?.getAttribute('role') === 'radiogroup' ? control : null);
+                    const target = control?.querySelector('#' + safeId(key)) ?? (control?.getAttribute('role') === 'radiogroup' ? control : null);
                     if (target) {
                         if (state.required) {
                             target.setAttribute('aria-required', 'true');
@@ -4847,7 +4867,7 @@
                 }
                 if (control && compiledItem.optionToggles.length > 0) {
                     // Re-applied on every change, so an option comes back when its expression turns true.
-                    const options = this.runtime.answerOptionsFor(item);
+                    const options = this.runtime.answerOptionsFor(item, key);
                     const off = (index) => {
                         const value = getAnswerOptionValue(options[index]);
                         return value !== null && state.offOptions.some((candidate) => equalPrimitive(candidate, value.value));
@@ -5109,7 +5129,7 @@
                 heading.id = safeId(storageKey) + '-label';
                 heading.className = 'oe-questionnaire-label';
                 heading.textContent = [child.prefix, child.text].filter(Boolean).join(child.prefix && child.text ? ' — ' : '') || child.linkId;
-                if (this.runtime.isRequired(child.linkId, child)) {
+                if (this.runtime.isRequired(storageKey, child)) {
                     const required = document.createElement('span');
                     required.className = 'text-danger ml-1';
                     required.textContent = '*';
@@ -5117,7 +5137,7 @@
                     heading.appendChild(required);
                 }
                 row.appendChild(heading);
-                const options = this.runtime.answerOptionsFor(child);
+                const options = this.runtime.answerOptionsFor(child, storageKey);
                 const repeats = child.repeats === true;
                 columns.forEach((column, columnIndex) => {
                     const cell = row.insertCell();
@@ -5369,7 +5389,7 @@
             const inputId = safeId(storageKey);
 
             if (OPTION_CAPABLE_TYPES.includes(item.type)
-                && this.runtime.answerOptionsFor(item).some((option) => getAnswerOptionValue(option) !== null)) {
+                && this.runtime.answerOptionsFor(item, storageKey).some((option) => getAnswerOptionValue(option) !== null)) {
                 const openText = (item.type === 'string' || item.type === 'text') && allowsFreeTextAnswer(item);
                 return this.renderChoice(item, container, control, answers, inputId, openText, storageKey);
             }
@@ -5420,7 +5440,7 @@
         }
 
         renderChoice(item, container, control, answers, inputId, allowOpenChoice, storageKey = item.linkId) {
-            const options = this.runtime.answerOptionsFor(item);
+            const options = this.runtime.answerOptionsFor(item, storageKey);
             const selected = answers;
             const repeats = item.repeats === true;
             const useCheckboxes = repeats || control === 'check-box';
@@ -6511,15 +6531,17 @@
             this.behaviorEngine.evaluateAll();
         }
 
-        // Required as the item's requiredExpression says, else as item.required.
-        isRequired(linkId, item) {
-            const dynamic = this.dynamicState?.get(linkId)?.required;
+        // Required as the item's requiredExpression says (for this repetition, given its storage
+        // key), else as item.required.
+        isRequired(key, item) {
+            const dynamic = (this.dynamicState?.get(key) ?? this.dynamicState?.get(item?.linkId))?.required;
             return dynamic === null || dynamic === undefined ? item?.required === true : dynamic;
         }
 
-        // The item's answer options: answerExpression's when it has one, else its own.
-        answerOptionsFor(item) {
-            const dynamic = this.dynamicState?.get(item.linkId)?.answerOptions;
+        // The item's answer options: answerExpression's (for this repetition, given its storage
+        // key) when it has one, else its own.
+        answerOptionsFor(item, key = item.linkId) {
+            const dynamic = (this.dynamicState?.get(key) ?? this.dynamicState?.get(item.linkId))?.answerOptions;
             return Array.isArray(dynamic) ? dynamic : resolveAnswerOptions(item, this.questionnaire);
         }
 

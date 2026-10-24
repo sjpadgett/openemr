@@ -370,6 +370,26 @@ describe('dates', () => {
 });
 
 describe('in a questionnaire', () => {
+    test('%qitem is the Questionnaire item the expression is on', () => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const runtime = runtimeApi.mount({
+            container,
+            questionnaire: {
+                resourceType: 'Questionnaire', status: 'active',
+                item: [{
+                    linkId: 'echo', type: 'string', text: 'Echo my own text', readOnly: true,
+                    extension: [{
+                        url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-calculatedExpression',
+                        valueExpression: { language: 'text/fhirpath', expression: "%qitem.text & ' (' & %qitem.linkId & ')'" },
+                    }],
+                }],
+            },
+        });
+        const echo = runtime.getQuestionnaireResponse().item.find((item) => item.linkId === 'echo');
+        expect(echo.answer).toEqual([{ valueString: 'Echo my own text (echo)' }]);
+    });
+
     test('a calculated total by weight() fills in as answers are chosen', () => {
         const container = document.createElement('div');
         document.body.appendChild(container);
