@@ -3341,6 +3341,16 @@
             }
 
             const actualValues = answers.map((answer) => answer.value);
+            // A quantity compares by its value in the same unit; in different units it is
+            // neither equal nor ordered (no unit conversion).
+            if (conditionKey === 'answerQuantity') {
+                const holds = { '=': (a, b) => a === b, '>': (a, b) => a > b, '<': (a, b) => a < b, '>=': (a, b) => a >= b, '<=': (a, b) => a <= b }[operator === '!=' ? '=' : operator];
+                if (!holds) {
+                    return false;
+                }
+                const anyHolds = actualValues.map((actual) => comparableQuantities(actual, expected)).filter(Array.isArray).some(([a, b]) => holds(a, b));
+                return operator === '!=' ? !anyHolds : anyHolds;
+            }
             if (operator === '=') {
                 return actualValues.some((actual) => equalPrimitive(actual, expected));
             }
