@@ -192,6 +192,30 @@ describe('functions', () => {
         expect(evaluate('%resource.item.answer.value.weight().sum()')).toEqual([4]);
     });
 
+    // FHIRPath 2.0.0: iif's otherwise-result is optional; a '.' after an integer literal starts a
+    // method call; an empty replace() pattern surrounds every character; min() and max() order
+    // strings, dates and times as well as numbers.
+    test.each([
+        ["iif(true, 'y')", ['y']],
+        ["iif(false, 'y')", []],
+        ["iif({}, 'y')", []],
+        ["iif(false, 'y', 'n')", ['n']],
+        ['2.power(10)', [1024]],
+        ['1.not()', [false]],
+        ['100.log(10)', [2]],
+        ['2.5.round()', [3]],
+        ["'abc'.replace('', 'x')", ['xaxbxcx']],
+        ["''.replace('', 'x')", ['x']],
+        ["'a$b'.replace('$', '$$')", ['a$$b']],
+        ["('b' | 'a' | 'c').min()", ['a']],
+        ["('b' | 'a' | 'c').max()", ['c']],
+        ['(@2026-03-01 | @2026-01-15).min()', ['2026-01-15']],
+        ['(@2026 | @2026-01).max()', []],
+        ['%resource.children().count()', [5]],
+    ])('%s', (expression, expected) => {
+        expect(evaluate(expression)).toEqual(expected);
+    });
+
     test('memberOf() stays unsupported: it needs a terminology service', () => {
         expect(() => evaluate(answer('a', 'value') + ".memberOf('http://example.org/vs')")).toThrow(/Unsupported FHIRPath method: memberOf/);
     });

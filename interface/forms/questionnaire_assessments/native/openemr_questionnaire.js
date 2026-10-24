@@ -1700,7 +1700,8 @@
                     while (index < source.length && /\d/.test(source[index])) {
                         index++;
                     }
-                    if (source[index] === '.') {
+                    // A '.' not followed by a digit starts a method call (2.power(10)).
+                    if (source[index] === '.' && /\d/.test(source[index + 1] ?? '')) {
                         index++;
                         while (index < source.length && /\d/.test(source[index])) {
                             index++;
@@ -2267,8 +2268,11 @@
                 const output = [];
                 for (const value of values) {
                     if (value !== null && typeof value === 'object') {
-                        for (const child of Object.values(value)) {
-                            output.push(...(Array.isArray(child) ? child : [child]));
+                        // resourceType names the resource; it isn't one of its elements.
+                        for (const [key, child] of Object.entries(value)) {
+                            if (key !== 'resourceType') {
+                                output.push(...(Array.isArray(child) ? child : [child]));
+                            }
                         }
                     }
                 }
@@ -2349,8 +2353,23 @@
                 case 'min':
                 case 'max': {
                     const numbers = collection.filter((value) => typeof value === 'number');
-                    if (numbers.length === 0) return [];
-                    return [name === 'min' ? Math.min(...numbers) : Math.max(...numbers)];
+                    if (numbers.length > 0) {
+                        return [name === 'min' ? Math.min(...numbers) : Math.max(...numbers)];
+                    }
+                    // Strings as text, dates and times by precision; empty when two can't be ordered.
+                    const strings = collection.filter((value) => typeof value === 'string');
+                    let best = strings[0];
+                    for (const value of strings.slice(1)) {
+                        const temporal = compareTemporal(value, best);
+                        const order = temporal !== undefined ? temporal : (value < best ? -1 : (value > best ? 1 : 0));
+                        if (order === null) {
+                            return [];
+                        }
+                        if (name === 'min' ? order < 0 : order > 0) {
+                            best = value;
+                        }
+                    }
+                    return best === undefined ? [] : [best];
                 }
                 case 'avg': {
                     const numbers = collection.filter((value) => typeof value === 'number');
@@ -2382,7 +2401,8 @@
                 case 'contains':
                     return onString((value) => value.includes(String(argValue(0))));
                 case 'replace':
-                    return onString((value) => value.split(String(argValue(0))).join(String(argValue(1))));
+                    // An empty pattern surrounds each character ('abc'.replace('', 'x') is 'xaxbxcx').
+                    return onString((value) => value.replaceAll(String(argValue(0)), () => String(argValue(1))));
                 case 'matches':
                     return onString((value) => new RegExp(String(argValue(0)), 'u').test(value));
                 case 'replacematches':
@@ -2478,10 +2498,14 @@
             const name = ast.name.toLowerCase();
             switch (name) {
                 case 'iif': {
-                    if (ast.args.length !== 3) {
-                        throw new Error('FHIRPath iif() requires three arguments.');
+                    // otherwise-result is optional; without it a false or empty criterion gives empty.
+                    if (ast.args.length !== 2 && ast.args.length !== 3) {
+                        throw new Error('FHIRPath iif() takes two or three arguments.');
                     }
                     const condition = collectionBoolean(this.evaluate(ast.args[0], environment, context));
+                    if (!condition && ast.args.length === 2) {
+                        return [];
+                    }
                     return this.evaluate(condition ? ast.args[1] : ast.args[2], environment, context);
                 }
                 case 'today':
