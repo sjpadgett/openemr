@@ -6642,8 +6642,9 @@
     }
 
     global.OpenEMRQuestionnaire = {
-        // Raised when the runtime gains what a host or a form may test for (0.3.0: the SDC and R4 additions of #14744).
-        version: '0.3.0',
+        // Raised when the runtime gains what a host or a form may test for (0.3.0: the SDC and R4 additions of #14744;
+        // 0.4.0: its post-freeze list, among them FHIRPath 2.0.0's empty and precision rules, %qitem and qrs-1 nesting).
+        version: '0.4.0',
         EXTENSIONS,
         DEFAULT_STRINGS,
         QuestionnaireCompiler,
