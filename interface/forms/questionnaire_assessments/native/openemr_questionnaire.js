@@ -1602,8 +1602,15 @@
                         return entry;
                     });
                 }
+                // R4 qrs-1: "Nested item can't be beneath both item and answer". A question's
+                // children go under its answer (the first, for a repeating question, since
+                // children aren't kept per answer); under item only while it has no answer.
                 if (childItems.length > 0) {
-                    responseItem.item = childItems;
+                    if (responseItem.answer) {
+                        responseItem.answer[0].item = childItems;
+                    } else {
+                        responseItem.item = childItems;
+                    }
                 }
                 return { responseItem, hasContent: answers.length > 0 || childItems.length > 0 };
             };
