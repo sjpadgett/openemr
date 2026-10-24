@@ -226,13 +226,57 @@ describe('quantities', () => {
         ["5 'mg' > 4 'kg'", []],
         ["5 'mg' = 5 'kg'", []],
         ["2 '1' > 1", [true]],
-        ["4 days = 4 'd'", [true]],
         ["2 weeks > 10 'd'", []],
         ["(3 'mg' + 2 'mg').value", [5]],
         ["(3 'mg' * 2).value", [6]],
         ["(3 'mg' + 2 'kg')", []],
     ])('%s', (expression, expected) => {
         expect(evaluate(expression)).toEqual(expected);
+    });
+
+    // FHIRPath 2.0.0: "calendar durations and definite quantity durations above seconds are
+    // considered unequal" (1 year = 1 'a' // false; 1 second = 1 's' // true). A quoted calendar
+    // word stays its UCUM unit, which WHO SMART's forms rely on (answers in 'wk' >= 104 'weeks').
+    test.each([
+        ["4 days = 4 'd'", [false]],
+        ["4 days != 4 'd'", [true]],
+        ["1 year = 1 'a'", [false]],
+        ["1 second = 1 's'", [true]],
+        ["4 days < 5 'd'", []],
+        ['4 days = 4 days', [true]],
+        ['4 days > 3 days', [true]],
+        ['2 * 4 days = 8 days', [true]],
+        ["2 * 4 days = 8 'd'", [false]],
+        ["4 'weeks' = 4 'wk'", [true]],
+    ])('%s (calendar durations)', (expression, expected) => {
+        expect(evaluate(expression)).toEqual(expected);
+    });
+
+    test('an answer in weeks against a quoted weeks literal', () => {
+        const resource = { resourceType: 'QuestionnaireResponse', item: [{ linkId: 'eweek', answer: [{ valueQuantity: { value: 110, system: 'http://unitsofmeasure.org', code: 'wk' } }] }] };
+        expect(evaluateOn(resource, "%resource.item.where(linkId = 'eweek').answer.value >= 104 'weeks'")).toEqual([true]);
+    });
+
+    test('a calculated calendar duration is saved as a plain quantity', () => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const runtime = runtimeApi.mount({
+            container,
+            questionnaire: {
+                resourceType: 'Questionnaire',
+                status: 'active',
+                item: [{
+                    linkId: 'wait', type: 'quantity', text: 'Wait', readOnly: true,
+                    extension: [{
+                        url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-calculatedExpression',
+                        valueExpression: { language: 'text/fhirpath', expression: '2 * 3 days' },
+                    }],
+                }],
+            },
+        });
+        const wait = runtime.getQuestionnaireResponse().item.find((item) => item.linkId === 'wait');
+        expect(wait.answer[0].valueQuantity.value).toBe(6);
+        expect(JSON.parse(JSON.stringify(wait.answer[0]))).toEqual(wait.answer[0]);
     });
 });
 

@@ -930,22 +930,39 @@
         return fieldsA.length === fieldsB.length ? 0 : null;
     }
 
-    // FHIRPath quantities ({ value, unit, code }, as answers and literals carry them). A calendar
-    // duration name counts as its UCUM code (4 days = 4 'd'); a plain number, or a quantity answer
-    // with no unit, is a quantity in unit '1'.
+    // FHIRPath quantities ({ value, unit, code }, as answers and literals carry them). A plain
+    // number, or a quantity answer with no unit, is a quantity in unit '1'. A quoted calendar word
+    // counts as its UCUM code (4 'weeks' = 4 'wk'), a leniency for forms such as WHO SMART's, which
+    // compare answers in 'wk' with 104 'weeks'. A calendar keyword (4 days) is a calendar duration:
+    // above seconds it is unequal to a UCUM duration, and the two don't compare (FHIRPath:
+    // "1 year = 1 'a' // false", "1 second = 1 's' // true").
     const UCUM_FOR_CALENDAR = Object.freeze({ year: 'a', month: 'mo', week: 'wk', day: 'd', hour: 'h', minute: 'min', second: 's' });
+
+    // The calendar durations FHIRPath literals write, kept apart from the objects so the mark
+    // never reaches a saved answer.
+    const CALENDAR_DURATIONS = new WeakSet();
+
+    function calendarDuration(value, unit) {
+        const duration = { value, unit };
+        CALENDAR_DURATIONS.add(duration);
+        return duration;
+    }
 
     function isQuantity(value) {
         return value !== null && typeof value === 'object' && typeof value.value === 'number';
     }
 
     function quantityUnit(quantity) {
+        if (CALENDAR_DURATIONS.has(quantity)) {
+            return quantity.unit === 'second' ? 's' : 'calendar ' + quantity.unit;
+        }
         const unit = String(quantity.code ?? quantity.unit ?? '1');
         return UCUM_FOR_CALENDAR[CALENDAR_UNITS[unit.toLowerCase()]] ?? unit;
     }
 
-    // [left value, right value] when both are numbers or quantities in one unit; null when their
-    // units differ (FHIRPath gives empty); undefined when either is something else.
+    // [left value, right value] when both are numbers or quantities in one unit; false for a
+    // calendar duration against a UCUM one above seconds (unequal, and not ordered); null when
+    // their units otherwise differ (FHIRPath gives empty); undefined when either is something else.
     function comparableQuantities(left, right) {
         const asQuantity = (value) => (typeof value === 'number' ? { value, unit: '1' } : (isQuantity(value) ? value : null));
         const a = asQuantity(left);
@@ -953,7 +970,13 @@
         if (a === null || b === null) {
             return undefined;
         }
-        return quantityUnit(a) === quantityUnit(b) ? [a.value, b.value] : null;
+        const unitA = quantityUnit(a);
+        const unitB = quantityUnit(b);
+        if (unitA === unitB) {
+            return [a.value, b.value];
+        }
+        const calendarAgainstUcum = (calendar, other) => calendar.startsWith('calendar ') && UCUM_CALENDAR_UNITS[other] !== undefined;
+        return calendarAgainstUcum(unitA, unitB) || calendarAgainstUcum(unitB, unitA) ? false : null;
     }
 
     // FHIRPath = on two items: true, false, or null (empty) when the comparison is unknown. A
@@ -964,7 +987,7 @@
         if (isQuantity(left) || isQuantity(right)) {
             const pair = comparableQuantities(left, right);
             if (pair !== undefined) {
-                return pair === null ? null : pair[0] === pair[1];
+                return pair === null || pair === false ? pair : pair[0] === pair[1];
             }
         }
         const order = compareTemporal(left, right);
@@ -975,7 +998,7 @@
     }
 
     function quantityArithmetic(operator, left, right) {
-        const result = (value, unitOf) => [{
+        const result = (value, unitOf) => [CALENDAR_DURATIONS.has(unitOf) ? calendarDuration(value, unitOf.unit) : {
             value,
             ...((unitOf.unit ?? unitOf.code) !== undefined ? { unit: unitOf.unit ?? unitOf.code } : {}),
             ...(unitOf.code !== undefined ? { code: unitOf.code } : {}),
@@ -1963,7 +1986,7 @@
                 const unitToken = this.current();
                 if (unitToken.type === 'identifier' && CALENDAR_UNITS[unitToken.value.toLowerCase()] !== undefined) {
                     this.index++;
-                    return { type: 'literal', value: { value: numberToken.value, unit: CALENDAR_UNITS[unitToken.value.toLowerCase()] } };
+                    return { type: 'literal', value: calendarDuration(numberToken.value, CALENDAR_UNITS[unitToken.value.toLowerCase()]) };
                 }
                 if (unitToken.type === 'string') {
                     this.index++;
@@ -5644,9 +5667,10 @@
                 ...findExtensions(item, EXTENSIONS.UNIT_OPTION).map((extension) => extension?.valueCoding),
                 ...(unitValueSet?.resourceType === 'ValueSet' ? expansionToAnswerOptions(unitValueSet).map((option) => option.valueCoding) : []),
             ].filter((coding) => coding && (typeof coding.code === 'string' || typeof coding.display === 'string'));
-            // With no unit options, a lone questionnaire-unit is the question's one unit (as LForms
-            // treated it, and as forms such as WHO SMART's use it on quantity questions), so the
-            // answer carries it and comparisons in that unit work.
+            // With no unit options, a lone questionnaire-unit is the question's one unit, so the
+            // answer carries it and comparisons in that unit work. R4 defines questionnaire-unit
+            // for integer and decimal questions only, and LHC-Forms refuses it on a quantity
+            // question; reading it here is a leniency for forms such as WHO SMART's that put it there.
             const fixedUnit = findExtension(item, EXTENSIONS.QUESTIONNAIRE_UNIT)?.valueCoding;
             if (unitOptions.length === 0 && fixedUnit && (typeof fixedUnit.code === 'string' || typeof fixedUnit.display === 'string')) {
                 unitOptions = [fixedUnit];
