@@ -250,14 +250,54 @@ describe('dates', () => {
         ['@2026-10-23 - 18 years', ['2008-10-23']],
         ["@2026-10-23 + 2 'wk'", ['2026-11-06']],
         ['@2026-10 + 3 months', ['2027-01']],
-        ['@2026 + 1 day', []],
         ['@2026-10-23T10:30:00-05:00 + 90 minutes', ['2026-10-23T12:00:00-05:00']],
+    ])('%s', (expression, expected) => {
+        expect(evaluate(expression)).toEqual(expected);
+    });
+
+    // FHIRPath 2.0.0: a duration finer than the value's precision is converted to it, "truncating
+    // any resulting decimal portion" (@2014 + 24 months is @2016).
+    test.each([
+        ['@2026 + 1 day', ['2026']],
+        ['@2026 - 1 day', ['2026']],
+        ['@2026 + 18 months', ['2027']],
+        ['@2026-01 + 45 days', ['2026-02']],
+        ['@2026-01-31 + 36 hours', ['2026-02-01']],
+        ['@2026-01-31T10:30 + 90 seconds', ['2026-01-31T10:31']],
+    ])('%s (partial precision)', (expression, expected) => {
+        expect(evaluate(expression)).toEqual(expected);
+    });
+
+    // FHIRPath 2.0.0: values compare precision by precision; "If one input has a value for the
+    // precision and the other does not, the comparison stops and the values cannot be compared",
+    // with seconds and milliseconds one precision, and dateTimes respecting their offsets.
+    test.each([
+        ['@2026 = @2026-01', []],
+        ['@2026 < @2026-01', []],
+        ['@2026 = @2027-01', [false]],
+        ['@2026 < @2027-01', [true]],
+        ['@2026-01-31 = @2026-01-31T00:00:00Z', []],
+        ['@2026-01-30 < @2026-01-31T10:00:00Z', [true]],
+        ['now() > today()', []],
+        ['@T10:30 = @T10:30:00', []],
+        ['@T10:30:00 = @T10:30:00.000', [true]],
+        ['@2026-01-31T10:30:00Z = @2026-01-31T05:30:00-05:00', [true]],
+        ['@2026-01-31T10:30:00Z > @2026-01-31T05:30:00-05:00', [false]],
+        ['@T10:30:00.toString()', ['10:30:00']],
+        ['@T10:30:00 is Time', [true]],
     ])('%s', (expression, expected) => {
         expect(evaluate(expression)).toEqual(expected);
     });
 
     test('a date answer compared with a shifted date', () => {
         expect(evaluate(answer('d', 'value') + ' < @2026-03-01 - 1 day')).toEqual([true]);
+    });
+
+    test('a time answer compared with a time literal', () => {
+        const resource = { resourceType: 'QuestionnaireResponse', item: [{ linkId: 't', answer: [{ valueTime: '10:30:00' }] }] };
+        const at = (expression) => new runtimeApi.FhirPathEvaluator().evaluate(new runtimeApi.FhirPathParser().parse(expression), { resource, rootResource: resource, context: resource }, resource);
+        expect(at(answer('t', 'value') + ' > @T09:00:00')).toEqual([true]);
+        expect(at(answer('t', 'value') + ' = @T10:30:00')).toEqual([true]);
     });
 });
 

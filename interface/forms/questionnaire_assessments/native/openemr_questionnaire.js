@@ -821,22 +821,36 @@
             + padDateTimePart(now.getMinutes()) + ':' + padDateTimePart(now.getSeconds()));
     }
 
+    const SECONDS_IN = Object.freeze({ week: 604800, day: 86400, hour: 3600, minute: 60, second: 1 });
+
     // A FHIR date or dateTime moved by a calendar duration, kept at its own
     // precision. A month or year past the end of a shorter month lands on its
     // last day (2026-01-31 + 1 month = 2026-02-28). A unit finer than the
-    // value's precision gives null, as does anything that isn't a date.
+    // value's precision is converted to that precision and truncated, by
+    // FHIRPath's factors (1 year = 12 months or 365 days, 1 month = 30 days),
+    // so @2026-01 + 45 days is @2026-02 and @2026 + 1 day is @2026. Anything
+    // that isn't a date gives null.
     function shiftFhirDate(value, quantity, sign) {
         const match = typeof value === 'string' ? FHIR_DATE_PATTERN.exec(value) : null;
-        const unit = CALENDAR_UNITS[String(quantity?.unit ?? '').toLowerCase()] ?? UCUM_CALENDAR_UNITS[quantity?.unit] ?? null;
-        const amount = sign * Math.trunc(Number(quantity?.value));
+        let unit = CALENDAR_UNITS[String(quantity?.unit ?? '').toLowerCase()] ?? UCUM_CALENDAR_UNITS[quantity?.unit] ?? null;
+        let amount = sign * Math.trunc(Number(quantity?.value));
         if (!match || unit === null || !Number.isFinite(amount)) {
             return null;
         }
         const [, year, month, day, hour, minute, second, fraction = '', zone = ''] = match;
-        const precision = hour !== undefined ? 'time' : (day !== undefined ? 'day' : (month !== undefined ? 'month' : 'year'));
-        const finest = { year: ['year'], month: ['year', 'month'], day: ['year', 'month', 'week', 'day'] }[precision];
-        if (finest !== undefined && !finest.includes(unit)) {
-            return null;
+        const precision = second !== undefined ? 'second' : (hour !== undefined ? 'minute' : (day !== undefined ? 'day' : (month !== undefined ? 'month' : 'year')));
+        if (precision === 'year' && unit !== 'year') {
+            amount = Math.trunc(unit === 'month' ? amount / 12 : amount * SECONDS_IN[unit] / (365 * 86400));
+            unit = 'year';
+        } else if (precision === 'month' && unit !== 'year' && unit !== 'month') {
+            amount = Math.trunc(amount * SECONDS_IN[unit] / (30 * 86400));
+            unit = 'month';
+        } else if (precision === 'day' && SECONDS_IN[unit] < 86400) {
+            amount = Math.trunc(amount * SECONDS_IN[unit] / 86400);
+            unit = 'day';
+        } else if (precision === 'minute' && unit === 'second') {
+            amount = Math.trunc(amount / 60);
+            unit = 'minute';
         }
         let date;
         if (unit === 'year' || unit === 'month') {
@@ -848,8 +862,7 @@
                 Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0)));
         } else {
             date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0)));
-            const milliseconds = { week: 604800000, day: 86400000, hour: 3600000, minute: 60000, second: 1000 }[unit];
-            date = new Date(date.getTime() + amount * milliseconds);
+            date = new Date(date.getTime() + amount * SECONDS_IN[unit] * 1000);
         }
         const yearText = String(date.getUTCFullYear()).padStart(4, '0');
         const monthText = padDateTimePart(date.getUTCMonth() + 1);
@@ -859,6 +872,62 @@
         if (precision === 'day') return yearText + '-' + monthText + '-' + dayText;
         return yearText + '-' + monthText + '-' + dayText + 'T' + padDateTimePart(date.getUTCHours()) + ':' + padDateTimePart(date.getUTCMinutes())
             + (second !== undefined ? ':' + padDateTimePart(date.getUTCSeconds()) + fraction : '') + zone;
+    }
+
+    // A date, dateTime or time as FHIRPath compares it: its fields from the year (for a time, the
+    // hour) down to its own precision, seconds and milliseconds as one decimal field, and its
+    // offset. Null for anything else.
+    function temporalValue(value) {
+        if (typeof value !== 'string') {
+            return null;
+        }
+        const time = /^(\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?$/.exec(value);
+        if (time) {
+            return { time: true, fields: time.slice(1).filter((field) => field !== undefined).map(Number), zone: null };
+        }
+        const match = FHIR_DATE_PATTERN.exec(value);
+        if (!match) {
+            return null;
+        }
+        const [, year, month, day, hour, minute, second, fraction = '', zone] = match;
+        const fields = [year, month, day, hour, minute, second === undefined ? undefined : second + fraction];
+        const end = fields.indexOf(undefined);
+        return { time: false, fields: (end === -1 ? fields : fields.slice(0, end)).map(Number), zone: zone ?? null };
+    }
+
+    // A dateTime's fields moved to UTC; with no offset it is read as local time.
+    function utcFields(temporal) {
+        const [year, month, day, hour, minute, ...seconds] = temporal.fields;
+        let offset;
+        if (temporal.zone === null) {
+            offset = -new Date(year, month - 1, day, hour, minute).getTimezoneOffset();
+        } else {
+            offset = temporal.zone === 'Z' ? 0 : (temporal.zone[0] === '-' ? -1 : 1) * (Number(temporal.zone.slice(1, 3)) * 60 + Number(temporal.zone.slice(4, 6)));
+        }
+        const utc = new Date(Date.UTC(year, month - 1, day, hour, minute) - offset * 60000);
+        return [utc.getUTCFullYear(), utc.getUTCMonth() + 1, utc.getUTCDate(), utc.getUTCHours(), utc.getUTCMinutes(), ...seconds];
+    }
+
+    // FHIRPath's ordering of two dates, dateTimes or times: -1, 0 or 1, field by field from the
+    // largest. Null when they agree as far as one value's precision goes and the other goes
+    // further ("the comparison stops and the result is empty"): @2026 against @2026-01, or a date
+    // against a dateTime on that day. Two times of day compare in UTC when either has an offset.
+    // Undefined when the two aren't both dates and dateTimes, or both times.
+    function compareTemporal(left, right) {
+        const a = temporalValue(left);
+        const b = temporalValue(right);
+        if (a === null || b === null || a.time !== b.time) {
+            return undefined;
+        }
+        const inUtc = !a.time && a.fields.length > 3 && b.fields.length > 3 && (a.zone !== null || b.zone !== null);
+        const fieldsA = inUtc ? utcFields(a) : a.fields;
+        const fieldsB = inUtc ? utcFields(b) : b.fields;
+        for (let index = 0; index < Math.min(fieldsA.length, fieldsB.length); index++) {
+            if (fieldsA[index] !== fieldsB[index]) {
+                return fieldsA[index] < fieldsB[index] ? -1 : 1;
+            }
+        }
+        return fieldsA.length === fieldsB.length ? 0 : null;
     }
 
     // FHIRPath quantities ({ value, unit, code }, as answers and literals carry them). A calendar
@@ -889,13 +958,18 @@
 
     // FHIRPath = on two items: true, false, or null (empty) when the comparison is unknown. A
     // quantity against a number or quantity compares by value when the units match and is unknown
-    // when they don't; anything else compares as equalPrimitive does.
+    // when they don't; dates and times compare as compareTemporal does; anything else compares as
+    // equalPrimitive does.
     function itemsEqual(left, right) {
         if (isQuantity(left) || isQuantity(right)) {
             const pair = comparableQuantities(left, right);
             if (pair !== undefined) {
                 return pair === null ? null : pair[0] === pair[1];
             }
+        }
+        const order = compareTemporal(left, right);
+        if (order !== undefined) {
+            return order === null ? null : order === 0;
         }
         return equalPrimitive(left, right);
     }
@@ -1643,8 +1717,10 @@
                     if (!match || match[0] === '@') {
                         throw new Error('Invalid FHIRPath date literal at position ' + index + '.');
                     }
+                    // Kept as FHIR writes the value: a time without its 'T' (10:30:00, as a
+                    // valueTime answer holds it), a date without a trailing 'T'.
                     const literal = match[0].slice(1);
-                    push('date', literal.endsWith('T') ? literal.slice(0, -1) : literal, index);
+                    push('date', literal.startsWith('T') ? literal.slice(1) : (literal.endsWith('T') ? literal.slice(0, -1) : literal), index);
                     index += match[0].length;
                     continue;
                 }
@@ -2512,6 +2588,14 @@
                             return [];
                         }
                         [leftValue, rightValue] = pair;
+                    }
+                    // Dates and times by precision and offset: empty when the order is unknown.
+                    const order = compareTemporal(leftValue, rightValue);
+                    if (order === null) {
+                        return [];
+                    }
+                    if (order !== undefined) {
+                        [leftValue, rightValue] = [order, 0];
                     }
                     if (operator === '>') return [leftValue > rightValue];
                     if (operator === '<') return [leftValue < rightValue];
