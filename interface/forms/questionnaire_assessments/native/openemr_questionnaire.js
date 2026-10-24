@@ -5487,10 +5487,17 @@
             // by default -> a select; sdc-questionnaire-unitOpen
             // optionsOrString / optionsOrType -> free text with suggestions.
             const unitValueSet = containedResourceById(this.runtime.questionnaire, getTypedExtensionValue(item, EXTENSIONS.UNIT_VALUE_SET));
-            const unitOptions = [
+            let unitOptions = [
                 ...findExtensions(item, EXTENSIONS.UNIT_OPTION).map((extension) => extension?.valueCoding),
                 ...(unitValueSet?.resourceType === 'ValueSet' ? expansionToAnswerOptions(unitValueSet).map((option) => option.valueCoding) : []),
             ].filter((coding) => coding && (typeof coding.code === 'string' || typeof coding.display === 'string'));
+            // With no unit options, a lone questionnaire-unit is the question's one unit (as LForms
+            // treated it, and as forms such as WHO SMART's use it on quantity questions), so the
+            // answer carries it and comparisons in that unit work.
+            const fixedUnit = findExtension(item, EXTENSIONS.QUESTIONNAIRE_UNIT)?.valueCoding;
+            if (unitOptions.length === 0 && fixedUnit && (typeof fixedUnit.code === 'string' || typeof fixedUnit.display === 'string')) {
+                unitOptions = [fixedUnit];
+            }
             const unitLabel = (coding) => coding.display ?? coding.code;
             const unitOpen = ['optionsOrString', 'optionsOrType'].includes(getStringExtension(item, EXTENSIONS.UNIT_OPEN));
             const currentUnit = quantity.unit ?? quantity.code ?? '';
