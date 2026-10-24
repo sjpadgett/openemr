@@ -2651,7 +2651,7 @@
                     const value = firstValue(this.evaluator.evaluate(ast, environment, null));
                     if (value !== undefined) {
                         runtime.responseStore.setAnswer(compiledItem.linkId, {
-                            valueKey: runtime.answerValueKeyForItem(compiledItem.item),
+                            valueKey: runtime.answerValueKeyForValue(compiledItem.item, value),
                             value,
                         });
                     }
@@ -2829,7 +2829,7 @@
                         continue;
                     }
                     runtime.responseStore.setAnswer(compiledItem.linkId, {
-                        valueKey: runtime.answerValueKeyForItem(item),
+                        valueKey: runtime.answerValueKeyForValue(item, value),
                         value,
                     });
                 } catch (error) {
@@ -2866,7 +2866,7 @@
                         return;
                     }
                     runtime.responseStore.setAnswer(storageKey, {
-                        valueKey: runtime.answerValueKeyForItem(compiledItem.item),
+                        valueKey: runtime.answerValueKeyForValue(compiledItem.item, value),
                         value,
                     });
                 } catch (error) {
@@ -2894,7 +2894,7 @@
                     const value = firstValue(this.evaluator.evaluate(ast, environment, null));
                     if (value !== undefined) {
                         runtime.responseStore.setAnswer(storageKey, {
-                            valueKey: runtime.answerValueKeyForItem(compiledItem.item),
+                            valueKey: runtime.answerValueKeyForValue(compiledItem.item, value),
                             value,
                         });
                     }
@@ -5547,6 +5547,9 @@
                     const option = document.createElement('option');
                     option.value = String(index);
                     option.textContent = unitLabel(coding);
+                    if (typeof coding.code === 'string') {
+                        option.dataset.code = coding.code;
+                    }
                     option.selected = currentUnit !== '' && (coding.code === quantity.code || unitLabel(coding) === currentUnit);
                     unitInput.appendChild(option);
                 });
@@ -5821,19 +5824,79 @@
             // Keyed by storage key so both canonical items (key === linkId) and
             // repeat-instance items (group\0index\0child) refresh from their own
             // stored value.
-            const calculatedLinkIds = new Set(this.runtime.compiled.calculatedItems.map((compiledItem) => compiledItem.linkId));
+            const calculatedItems = new Map(this.runtime.compiled.calculatedItems.map((compiledItem) => [compiledItem.linkId, compiledItem.item]));
             for (const [storageKey, entry] of this.inputs) {
-                // A quantity registers its row; its number box is the one to refresh.
-                const input = entry instanceof HTMLInputElement ? entry : entry?.querySelector?.('input[type="number"]');
-                if (!(input instanceof HTMLInputElement)) {
+                const item = calculatedItems.get(storageKey.split(INSTANCE_SEPARATOR).pop());
+                if (!item || !entry) {
                     continue;
                 }
-                const linkId = storageKey.split(INSTANCE_SEPARATOR).pop();
-                if (!calculatedLinkIds.has(linkId)) {
-                    continue;
+                const answers = this.runtime.responseStore.getAnswers(storageKey);
+                if (entry instanceof HTMLInputElement) {
+                    entry.value = firstValue(answers)?.value ?? '';
+                } else {
+                    this.showCalculatedAnswers(item, entry, answers);
                 }
-                const value = firstValue(this.runtime.responseStore.getAnswers(storageKey))?.value;
-                input.value = isQuantity(value) ? value.value : (value ?? '');
+            }
+        }
+
+        // A calculated answer in a control made of several elements: a quantity's number and
+        // unit, a boolean's radios, a choice's radios, check boxes, drop-down, autocomplete or
+        // open text.
+        showCalculatedAnswers(item, entry, answers) {
+            const value = firstValue(answers)?.value;
+            if (item.type === 'quantity') {
+                const box = entry.querySelector('input[type="number"]');
+                if (box) {
+                    box.value = isQuantity(value) ? value.value : '';
+                }
+                // With no value, the unit stays as the person or the form left it (a lone unit is preselected).
+                const unit = isQuantity(value) ? entry.querySelector('select.oe-questionnaire-unit-select, input[type="text"]') : null;
+                const unitText = isQuantity(value) ? (value.unit ?? value.code ?? '') : '';
+                if (unit instanceof HTMLSelectElement) {
+                    // The option for the answer's unit, or none: another option's label would misstate it.
+                    const match = [...unit.options].find((option) => option.value !== ''
+                        && ((isQuantity(value) && value.code !== undefined && option.dataset.code === value.code) || option.textContent === unitText));
+                    unit.value = match ? match.value : '';
+                } else if (unit) {
+                    unit.value = unitText;
+                }
+                return;
+            }
+            if (item.type === 'boolean') {
+                const [yes, no] = entry.querySelectorAll('input[type="radio"]');
+                if (yes && no) {
+                    yes.checked = value === true;
+                    no.checked = value === false;
+                }
+                return;
+            }
+            if (item.type !== 'choice' && item.type !== 'open-choice') {
+                return;
+            }
+            const options = this.runtime.answerOptionsFor(item);
+            const optionAnswers = options.map((option) => getAnswerOptionValue(option));
+            const chosen = (optionAnswer) => optionAnswer !== null
+                && answers.some((answer) => answer.valueKey === optionAnswer.valueKey && equalPrimitive(answer.value, optionAnswer.value));
+            for (const input of entry.querySelectorAll('input.custom-control-input')) {
+                input.checked = chosen(optionAnswers[Number(input.value)] ?? null);
+            }
+            const select = entry.querySelector('select.oe-questionnaire-choice-select');
+            if (select) {
+                const index = optionAnswers.findIndex(chosen);
+                select.value = index >= 0 ? String(index) : '';
+            }
+            // An open choice's own text: a string answer that is not one of the options.
+            const custom = answers.find((answer) => answer.valueKey === 'valueString'
+                && !optionAnswers.some((optionAnswer) => optionAnswer?.valueKey === 'valueString' && equalPrimitive(optionAnswer.value, answer.value)));
+            const autocomplete = entry.querySelector('input.oe-questionnaire-autocomplete');
+            if (autocomplete) {
+                const index = optionAnswers.findIndex(chosen);
+                autocomplete.value = index >= 0 ? answerOptionLabel(options[index], optionAnswers[index]) : (item.type === 'open-choice' ? custom?.value ?? '' : '');
+                return;
+            }
+            const openText = entry.querySelector('input[type="text"]');
+            if (openText && item.type === 'open-choice') {
+                openText.value = custom?.value ?? '';
             }
         }
 
@@ -6038,6 +6101,34 @@
                 url: 'valueUri',
                 quantity: 'valueQuantity',
             }[item.type] ?? 'valueString';
+        }
+
+        // The answer key for a value an expression gave (calculated or initial). A choice's value
+        // is a Coding, or whatever type its options are (R4 answerOption value[x]); reference and
+        // attachment answers keep their own keys.
+        answerValueKeyForValue(item, value) {
+            if (item.type === 'reference') {
+                return 'valueReference';
+            }
+            if (item.type === 'attachment') {
+                return 'valueAttachment';
+            }
+            if (item.type === 'choice' || item.type === 'open-choice') {
+                if (value !== null && typeof value === 'object') {
+                    return 'reference' in value ? 'valueReference' : 'valueCoding';
+                }
+                if (typeof value === 'number') {
+                    return Number.isInteger(value) ? 'valueInteger' : 'valueDecimal';
+                }
+                if (typeof value === 'string' && FHIR_TIME_PATTERN.test(value)) {
+                    return 'valueTime';
+                }
+                if (typeof value === 'string' && FHIR_DATE_PATTERN.test(value)) {
+                    return 'valueDate';
+                }
+                return 'valueString';
+            }
+            return this.answerValueKeyForItem(item);
         }
 
         // Whether a person filling the form could answer over this calculated item: it is shown
