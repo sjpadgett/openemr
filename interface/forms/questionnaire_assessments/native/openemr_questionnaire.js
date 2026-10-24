@@ -841,6 +841,58 @@
             + (second !== undefined ? ':' + padDateTimePart(date.getUTCSeconds()) + fraction : '') + zone;
     }
 
+    // FHIRPath quantities ({ value, unit, code }, as answers and literals carry them). A calendar
+    // duration name counts as its UCUM code (4 days = 4 'd'); a plain number, or a quantity answer
+    // with no unit, is a quantity in unit '1'.
+    const UCUM_FOR_CALENDAR = Object.freeze({ year: 'a', month: 'mo', week: 'wk', day: 'd', hour: 'h', minute: 'min', second: 's' });
+
+    function isQuantity(value) {
+        return value !== null && typeof value === 'object' && typeof value.value === 'number';
+    }
+
+    function quantityUnit(quantity) {
+        const unit = String(quantity.code ?? quantity.unit ?? '1');
+        return UCUM_FOR_CALENDAR[CALENDAR_UNITS[unit.toLowerCase()]] ?? unit;
+    }
+
+    // [left value, right value] when both are numbers or quantities in one unit; null when their
+    // units differ (FHIRPath gives empty); undefined when either is something else.
+    function comparableQuantities(left, right) {
+        const asQuantity = (value) => (typeof value === 'number' ? { value, unit: '1' } : (isQuantity(value) ? value : null));
+        const a = asQuantity(left);
+        const b = asQuantity(right);
+        if (a === null || b === null) {
+            return undefined;
+        }
+        return quantityUnit(a) === quantityUnit(b) ? [a.value, b.value] : null;
+    }
+
+    function quantityArithmetic(operator, left, right) {
+        const result = (value, unitOf) => [{
+            value,
+            ...((unitOf.unit ?? unitOf.code) !== undefined ? { unit: unitOf.unit ?? unitOf.code } : {}),
+            ...(unitOf.code !== undefined ? { code: unitOf.code } : {}),
+            ...(unitOf.system !== undefined ? { system: unitOf.system } : {}),
+        }];
+        if (operator === '+' || operator === '-') {
+            const pair = comparableQuantities(left, right);
+            if (!pair) {
+                return [];
+            }
+            return result(operator === '+' ? pair[0] + pair[1] : pair[0] - pair[1], isQuantity(left) ? left : right);
+        }
+        if (isQuantity(left) && typeof right === 'number') {
+            if (operator === '/' && right === 0) {
+                return [];
+            }
+            return result(operator === '*' ? left.value * right : left.value / right, left);
+        }
+        if (operator === '*' && typeof left === 'number' && isQuantity(right)) {
+            return result(left * right.value, right);
+        }
+        return [];
+    }
+
     // FHIRPath's type test (is, as, ofType) over the plain JSON the runtime
     // evaluates. Dates are JSON strings, so a string that reads as a date,
     // dateTime or time counts as that type rather than as a string.
@@ -2354,11 +2406,24 @@
                     return typeof value === 'string' && typeof other === 'string' ? normalise(value) === normalise(other) : equalPrimitive(value, other);
                 });
             };
+            // One quantity against another (or a number, which is a quantity in unit '1'):
+            // compared by value when their units match, empty when they don't.
+            const quantityPair = () => {
+                if (left.length !== 1 || right.length !== 1 || (!isQuantity(left[0]) && !isQuantity(right[0]))) {
+                    return undefined;
+                }
+                return comparableQuantities(left[0], right[0]);
+            };
             switch (operator) {
                 case '=':
-                    return [collectionsEqual(left, right)];
-                case '!=':
-                    return [!collectionsEqual(left, right)];
+                case '!=': {
+                    const pair = quantityPair();
+                    if (pair === null) {
+                        return [];
+                    }
+                    const equal = pair !== undefined ? pair[0] === pair[1] : collectionsEqual(left, right);
+                    return [operator === '=' ? equal : !equal];
+                }
                 case '~':
                     return [equivalent(asCollection(left), asCollection(right))];
                 case '!~':
@@ -2399,10 +2464,18 @@
                 case '<':
                 case '>=':
                 case '<=': {
-                    const leftValue = firstValue(left);
-                    const rightValue = firstValue(right);
+                    let leftValue = firstValue(left);
+                    let rightValue = firstValue(right);
                     if (leftValue === undefined || rightValue === undefined) {
                         return [];
+                    }
+                    if (isQuantity(leftValue) || isQuantity(rightValue)) {
+                        // Empty when the units differ, or when the other side is neither a number nor a quantity.
+                        const pair = comparableQuantities(leftValue, rightValue);
+                        if (!pair) {
+                            return [];
+                        }
+                        [leftValue, rightValue] = pair;
                     }
                     if (operator === '>') return [leftValue > rightValue];
                     if (operator === '<') return [leftValue < rightValue];
@@ -2424,6 +2497,10 @@
                     // String concatenation: + on two strings.
                     if (operator === '+' && typeof leftFirst === 'string' && typeof rightFirst === 'string') {
                         return [leftFirst + rightFirst];
+                    }
+                    // Quantities: + and - in the same unit; * and / by a number.
+                    if (isQuantity(leftFirst) || isQuantity(rightFirst)) {
+                        return quantityArithmetic(operator, leftFirst, rightFirst);
                     }
                     const leftValue = Number(leftFirst);
                     const rightValue = Number(rightFirst);
