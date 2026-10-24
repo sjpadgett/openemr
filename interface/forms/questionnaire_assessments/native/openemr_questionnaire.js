@@ -5308,6 +5308,9 @@
             if (item.repeats === true && repeatableScalar.includes(item.type)) {
                 return this.renderRepeatingScalar(item, container, storageKey);
             }
+            if (item.repeats === true && ['boolean', 'quantity', 'attachment'].includes(item.type)) {
+                return this.renderRepeatingRows(item, container, storageKey, inputId);
+            }
 
             switch (item.type) {
                 case 'choice':
@@ -5525,7 +5528,9 @@
             return container;
         }
 
-        renderBoolean(item, container, answers, inputId, storageKey = item.linkId) {
+        // onAnswer receives the one answer the control makes (null to clear); by default it
+        // becomes the item's answer. A repeating item's rows pass their own.
+        renderBoolean(item, container, answers, inputId, storageKey = item.linkId, onAnswer = (answer) => this.runtime.setAnswers(storageKey, answer ? [answer] : [])) {
             const selected = firstValue(answers)?.value;
             [
                 { value: true, label: this.runtime.t('yes') },
@@ -5543,7 +5548,7 @@
                 input.disabled = item.readOnly === true;
                 input.addEventListener('change', () => {
                     if (input.checked) {
-                        this.runtime.setAnswers(storageKey, [{ valueKey: 'valueBoolean', value: option.value }]);
+                        onAnswer({ valueKey: 'valueBoolean', value: option.value });
                     }
                 });
                 const label = document.createElement('label');
@@ -5700,7 +5705,7 @@
             return container;
         }
 
-        renderQuantity(item, container, answers, inputId, storageKey = item.linkId) {
+        renderQuantity(item, container, answers, inputId, storageKey = item.linkId, onAnswer = (answer) => this.runtime.setAnswers(storageKey, answer ? [answer] : [])) {
             const quantity = firstValue(answers)?.value ?? {};
             const row = document.createElement('div');
             row.className = 'form-row';
@@ -5782,7 +5787,7 @@
             row.append(valueColumn, unitColumn);
             const save = () => {
                 if (valueInput.value === '') {
-                    this.runtime.setAnswers(storageKey, []);
+                    onAnswer(null);
                     return;
                 }
                 const next = { value: Number.parseFloat(valueInput.value) };
@@ -5813,7 +5818,7 @@
                         next.code = unit;
                     }
                 }
-                this.runtime.setAnswers(storageKey, [{ valueKey: 'valueQuantity', value: next }]);
+                onAnswer({ valueKey: 'valueQuantity', value: next });
             };
             valueInput.addEventListener('change', save);
             unitInput.addEventListener('change', save);
@@ -5844,7 +5849,7 @@
             return container;
         }
 
-        renderAttachment(item, container, answers, inputId, storageKey = item.linkId) {
+        renderAttachment(item, container, answers, inputId, storageKey = item.linkId, onAnswer = (answer) => this.runtime.setAnswers(storageKey, answer ? [answer] : [])) {
             const existing = firstValue(answers)?.value;
             const input = document.createElement('input');
             input.type = 'file';
@@ -5863,7 +5868,7 @@
             input.addEventListener('change', () => {
                 const file = input.files && input.files[0];
                 if (!file) {
-                    this.runtime.setAnswers(storageKey, []);
+                    onAnswer(null);
                     return;
                 }
                 const reader = new FileReader();
@@ -5877,7 +5882,7 @@
                     if (Number.isFinite(file.size)) {
                         attachment.size = file.size;
                     }
-                    this.runtime.setAnswers(storageKey, [{ valueKey: 'valueAttachment', value: attachment }]);
+                    onAnswer({ valueKey: 'valueAttachment', value: attachment });
                 };
                 reader.readAsDataURL(file);
             });
@@ -6005,6 +6010,58 @@
 
             rerender();
             this.inputs.set(storageKey, container);
+            return container;
+        }
+
+        // A repeating boolean, quantity or attachment: one row per answer, each with the type's
+        // own control, plus an empty row to add one (up to maxOccurs).
+        renderRepeatingRows(item, container, storageKey, inputId) {
+            const maxOccurs = getIntegerExtension(item, EXTENSIONS.MAX_OCCURS);
+            const renderOne = { boolean: this.renderBoolean, quantity: this.renderQuantity, attachment: this.renderAttachment }[item.type];
+            const rerender = () => {
+                container.replaceChildren();
+                const answers = this.runtime.responseStore.getAnswers(storageKey);
+                const update = (index, answer) => {
+                    const current = this.runtime.responseStore.getAnswers(storageKey);
+                    if (index < current.length) {
+                        if (answer) {
+                            current[index] = answer;
+                        } else {
+                            current.splice(index, 1);
+                        }
+                    } else if (answer) {
+                        current.push(answer);
+                    }
+                    this.runtime.setAnswers(storageKey, current);
+                    rerender();
+                };
+                const rows = answers.map((answer, index) => [answer, index]);
+                if (item.readOnly !== true && (maxOccurs === null || answers.length < maxOccurs)) {
+                    rows.push([null, answers.length]);
+                }
+                for (const [answer, index] of rows) {
+                    const row = document.createElement('div');
+                    row.className = 'form-row oe-questionnaire-repeat-row mb-1';
+                    const column = document.createElement('div');
+                    column.className = 'col';
+                    renderOne.call(this, item, column, answer ? [answer] : [], inputId + '-' + index, storageKey, (next) => update(index, next));
+                    row.appendChild(column);
+                    if (answer && item.readOnly !== true) {
+                        const removeColumn = document.createElement('div');
+                        removeColumn.className = 'col-auto';
+                        const removeButton = document.createElement('button');
+                        removeButton.type = 'button';
+                        removeButton.className = 'btn btn-sm btn-link text-danger oe-questionnaire-repeat-remove py-0';
+                        removeButton.textContent = this.runtime.t('remove');
+                        removeButton.addEventListener('click', () => update(index, null));
+                        removeColumn.appendChild(removeButton);
+                        row.appendChild(removeColumn);
+                    }
+                    container.appendChild(row);
+                }
+                this.inputs.set(storageKey, container);
+            };
+            rerender();
             return container;
         }
 

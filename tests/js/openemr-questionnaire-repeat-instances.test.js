@@ -419,3 +419,68 @@ describe('CodeRabbit rev2 fixes', () => {
         expect(groups[1].item.find((i) => i.linkId === 'seeded').answer[0].valueString).toBe('from-expression');
     });
 });
+
+describe('repeating boolean, quantity and attachment questions', () => {
+    const MAX_OCCURS = 'http://hl7.org/fhir/StructureDefinition/questionnaire-maxOccurs';
+    const mountItem = (item, questionnaireResponse) => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const runtime = runtimeApi.mount({
+            container,
+            questionnaire: { resourceType: 'Questionnaire', status: 'active', item: [item] },
+            ...(questionnaireResponse ? { questionnaireResponse } : {}),
+        });
+        return { container, runtime };
+    };
+    const rows = (container) => [...container.querySelectorAll('.oe-questionnaire-repeat-row')];
+    const answersOf = (runtime, linkId) => runtime.getQuestionnaireResponse().item?.find((entry) => entry.linkId === linkId)?.answer ?? [];
+    const type = (input, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const weight = {
+        linkId: 'w', type: 'quantity', text: 'Weights', repeats: true,
+        extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/questionnaire-unitOption', valueCoding: { system: 'http://unitsofmeasure.org', code: 'kg', display: 'kg' } }],
+    };
+
+    test('a repeating quantity takes an answer per row, and a row can be removed', () => {
+        const { container, runtime } = mountItem(weight);
+        type(rows(container)[0].querySelector('input[type="number"]'), '70');
+        type(rows(container)[1].querySelector('input[type="number"]'), '80');
+        expect(answersOf(runtime, 'w').map((answer) => answer.valueQuantity.value)).toEqual([70, 80]);
+        expect(rows(container)).toHaveLength(3);
+        rows(container)[0].querySelector('.oe-questionnaire-repeat-remove').click();
+        expect(answersOf(runtime, 'w')).toEqual([{ valueQuantity: { value: 80, unit: 'kg', system: 'http://unitsofmeasure.org', code: 'kg' } }]);
+    });
+
+    test('a saved response with two quantities loads as two rows, and maxOccurs stops a third', () => {
+        const { container } = mountItem({ ...weight, extension: [...weight.extension, { url: MAX_OCCURS, valueInteger: 2 }] }, {
+            resourceType: 'QuestionnaireResponse', status: 'in-progress',
+            item: [{ linkId: 'w', answer: [{ valueQuantity: { value: 70, unit: 'kg', code: 'kg' } }, { valueQuantity: { value: 72, unit: 'kg', code: 'kg' } }] }],
+        });
+        expect(rows(container).map((row) => row.querySelector('input[type="number"]').value)).toEqual(['70', '72']);
+    });
+
+    test('a repeating boolean takes an answer per row', () => {
+        const { container, runtime } = mountItem({ linkId: 'b', type: 'boolean', text: 'Each day: any pain?', repeats: true });
+        const pick = (row, index) => {
+            const radio = row.querySelectorAll('input[type="radio"]')[index];
+            radio.checked = true;
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        pick(rows(container)[0], 0);
+        pick(rows(container)[1], 1);
+        expect(answersOf(runtime, 'b')).toEqual([{ valueBoolean: true }, { valueBoolean: false }]);
+    });
+
+    test('a repeating attachment takes a file per row', async () => {
+        const { container, runtime } = mountItem({ linkId: 'f', type: 'attachment', text: 'Photos', repeats: true });
+        for (const name of ['a.txt', 'b.txt']) {
+            const input = rows(container).at(-1).querySelector('input[type="file"]');
+            Object.defineProperty(input, 'files', { value: [new File(['hello'], name, { type: 'text/plain' })] });
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(answersOf(runtime, 'f').map((answer) => answer.valueAttachment.title)).toEqual(['a.txt', 'b.txt']);
+    });
+});
