@@ -723,6 +723,21 @@
         return result;
     }
 
+    // LHC-Forms (OpenEMR 8.2 and earlier) saved an answer to a choice with string options
+    // (answerOption.valueString) as a Coding holding only the text, valueCoding { display: 'Yes' }.
+    // Read it as the string option it stands for, so it shows as chosen and enableWhen on
+    // answerString matches it.
+    function fromLhcFormsAnswer(item, value) {
+        const coding = value?.valueKey === 'valueCoding' ? value.value : null;
+        if (coding === null || typeof coding !== 'object' || typeof coding.display !== 'string'
+            || coding.code !== undefined || coding.system !== undefined
+            || (item?.type !== 'choice' && item?.type !== 'open-choice')) {
+            return value;
+        }
+        const isOption = (item.answerOption ?? []).some((option) => option?.valueString === coding.display);
+        return isOption ? { valueKey: 'valueString', value: coding.display } : value;
+    }
+
     function answerDisplay(answer) {
         const value = answer?.value;
         if (value === undefined || value === null) {
@@ -1443,7 +1458,8 @@
                     if (match) {
                         const values = (match.answer ?? [])
                             .map(getAnswerValue)
-                            .filter((answer) => answer !== null);
+                            .filter((answer) => answer !== null)
+                            .map((answer) => fromLhcFormsAnswer(questionnaireItem, answer));
                         if (values.length > 0) {
                             this.answers.set(keyPrefix + linkId, values);
                         }

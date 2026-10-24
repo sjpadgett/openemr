@@ -105,3 +105,41 @@ describe('a question with children (R4 qrs-1)', () => {
         expect(responseItem(runtime, 'total').answer).toEqual([{ valueInteger: 2 }]);
     });
 });
+
+describe('responses saved by LHC-Forms', () => {
+    // LHC-Forms 33 (OpenEMR 8.2 and earlier) saved a string option as valueCoding { display }.
+    const items = [
+        {
+            linkId: 'pain', type: 'choice', text: 'Any pain?',
+            answerOption: [{ valueString: 'Yes' }, { valueString: 'No' }],
+        },
+        {
+            linkId: 'where', type: 'string', text: 'Where?',
+            enableWhen: [{ question: 'pain', operator: '=', answerString: 'Yes' }],
+        },
+    ];
+    const saved = (coding) => ({
+        resourceType: 'QuestionnaireResponse', status: 'completed',
+        item: [{ linkId: 'pain', answer: [{ valueCoding: coding }] }],
+    });
+
+    test('a display-only Coding naming a string option loads as that option', () => {
+        const { container, runtime } = mount(items, saved({ display: 'Yes' }));
+        // The options are Yes, then No.
+        const radios = [...container.querySelectorAll('[data-link-id="pain"] input[type="radio"]')];
+        expect(radios.map((input) => input.checked)).toEqual([true, false]);
+        expect(runtime.isEnabled('where')).toBe(true);
+        expect(responseItem(runtime, 'pain').answer).toEqual([{ valueString: 'Yes' }]);
+    });
+
+    test('a display-only Coding that names no option is kept as it was', () => {
+        const { runtime } = mount(items, saved({ display: 'Sometimes' }));
+        expect(responseItem(runtime, 'pain').answer).toEqual([{ valueCoding: { display: 'Sometimes' } }]);
+        expect(runtime.isEnabled('where')).toBe(false);
+    });
+
+    test('a Coding with a code is never rewritten', () => {
+        const { runtime } = mount(items, saved({ code: 'Yes', display: 'Yes' }));
+        expect(responseItem(runtime, 'pain').answer).toEqual([{ valueCoding: { code: 'Yes', display: 'Yes' } }]);
+    });
+});
