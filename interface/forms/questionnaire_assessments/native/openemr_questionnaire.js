@@ -227,6 +227,13 @@
         return Boolean(collection[0]);
     }
 
+    // A collection as an operand of and, or, xor and implies: true, false, or null for empty
+    // (FHIRPath's three-valued logic, where empty means unknown).
+    function logicValue(value) {
+        const collection = asCollection(value);
+        return collection.length === 0 ? null : Boolean(collection[0]);
+    }
+
     function equalPrimitive(left, right) {
         if (left && typeof left === 'object' && right && typeof right === 'object') {
             if ('code' in left || 'code' in right) {
@@ -242,10 +249,23 @@
         return left === right;
     }
 
+    // FHIRPath = on two collections: true, false, or null (empty) when either is empty or an
+    // item's comparison is unknown. Items are compared in order, and collections of different
+    // sizes are unequal.
     function collectionsEqual(left, right) {
         const leftCollection = asCollection(left);
         const rightCollection = asCollection(right);
-        return leftCollection.some((leftValue) => rightCollection.some((rightValue) => equalPrimitive(leftValue, rightValue)));
+        if (leftCollection.length === 0 || rightCollection.length === 0) {
+            return null;
+        }
+        if (leftCollection.length !== rightCollection.length) {
+            return false;
+        }
+        const results = leftCollection.map((value, index) => itemsEqual(value, rightCollection[index]));
+        if (results.includes(false)) {
+            return false;
+        }
+        return results.includes(null) ? null : true;
     }
 
     function safeId(value) {
@@ -865,6 +885,19 @@
             return undefined;
         }
         return quantityUnit(a) === quantityUnit(b) ? [a.value, b.value] : null;
+    }
+
+    // FHIRPath = on two items: true, false, or null (empty) when the comparison is unknown. A
+    // quantity against a number or quantity compares by value when the units match and is unknown
+    // when they don't; anything else compares as equalPrimitive does.
+    function itemsEqual(left, right) {
+        if (isQuantity(left) || isQuantity(right)) {
+            const pair = comparableQuantities(left, right);
+            if (pair !== undefined) {
+                return pair === null ? null : pair[0] === pair[1];
+            }
+        }
+        return equalPrimitive(left, right);
     }
 
     function quantityArithmetic(operator, left, right) {
@@ -2367,33 +2400,45 @@
 
         evaluateBinary(ast, environment, context) {
             const operator = ast.operator;
+            // Three-valued logic: an empty operand is unknown, so the result is empty unless the
+            // other operand decides it (false and {} is false, true or {} is true).
             if (operator === 'or') {
-                const left = collectionBoolean(this.evaluate(ast.left, environment, context));
-                if (left) {
+                const left = logicValue(this.evaluate(ast.left, environment, context));
+                if (left === true) {
                     return [true];
                 }
-                return [collectionBoolean(this.evaluate(ast.right, environment, context))];
+                const right = logicValue(this.evaluate(ast.right, environment, context));
+                if (right === true) {
+                    return [true];
+                }
+                return left === false && right === false ? [false] : [];
             }
             if (operator === 'and') {
-                const left = collectionBoolean(this.evaluate(ast.left, environment, context));
-                if (!left) {
+                const left = logicValue(this.evaluate(ast.left, environment, context));
+                if (left === false) {
                     return [false];
                 }
-                return [collectionBoolean(this.evaluate(ast.right, environment, context))];
+                const right = logicValue(this.evaluate(ast.right, environment, context));
+                if (right === false) {
+                    return [false];
+                }
+                return left === true && right === true ? [true] : [];
             }
             if (operator === 'xor') {
-                return [collectionBoolean(this.evaluate(ast.left, environment, context)) !== collectionBoolean(this.evaluate(ast.right, environment, context))];
+                const left = logicValue(this.evaluate(ast.left, environment, context));
+                const right = logicValue(this.evaluate(ast.right, environment, context));
+                return left === null || right === null ? [] : [left !== right];
             }
             if (operator === 'implies') {
-                const left = this.evaluate(ast.left, environment, context);
-                if (left.length > 0 && !collectionBoolean(left)) {
+                const left = logicValue(this.evaluate(ast.left, environment, context));
+                if (left === false) {
                     return [true];
                 }
-                const right = this.evaluate(ast.right, environment, context);
-                if (collectionBoolean(right)) {
+                const right = logicValue(this.evaluate(ast.right, environment, context));
+                if (right === true) {
                     return [true];
                 }
-                return left.length === 0 ? [] : [false];
+                return left === true && right === false ? [false] : [];
             }
 
             const left = this.evaluate(ast.left, environment, context);
@@ -2406,22 +2451,13 @@
                     return typeof value === 'string' && typeof other === 'string' ? normalise(value) === normalise(other) : equalPrimitive(value, other);
                 });
             };
-            // One quantity against another (or a number, which is a quantity in unit '1'):
-            // compared by value when their units match, empty when they don't.
-            const quantityPair = () => {
-                if (left.length !== 1 || right.length !== 1 || (!isQuantity(left[0]) && !isQuantity(right[0]))) {
-                    return undefined;
-                }
-                return comparableQuantities(left[0], right[0]);
-            };
             switch (operator) {
                 case '=':
                 case '!=': {
-                    const pair = quantityPair();
-                    if (pair === null) {
+                    const equal = collectionsEqual(left, right);
+                    if (equal === null) {
                         return [];
                     }
-                    const equal = pair !== undefined ? pair[0] === pair[1] : collectionsEqual(left, right);
                     return [operator === '=' ? equal : !equal];
                 }
                 case '~':

@@ -92,6 +92,63 @@ describe('operators', () => {
     });
 });
 
+// FHIRPath 2.0.0: and, or, xor and implies give "the empty collection ({ }) otherwise", and =
+// with an empty operand "returns an empty collection". Collection equality is item by item, in
+// order ("Comparison is order dependent").
+describe('empty operands and collections', () => {
+    test.each([
+        ['true and {}', []],
+        ['{} and {}', []],
+        ['false and {}', [false]],
+        ['{} and false', [false]],
+        ['true or {}', [true]],
+        ['{} or true', [true]],
+        ['false or {}', []],
+        ['true xor {}', []],
+        ['{} xor false', []],
+        ['true implies {}', []],
+        ['{} implies true', [true]],
+        ['{} implies false', []],
+        ['1 = {}', []],
+        ['1 != {}', []],
+        ['{} = {}', []],
+        [answer('missing', 'value') + " != 'x'", []],
+        ['(1 | 2) = (1 | 2)', [true]],
+        ['(1 | 2) = (2 | 1)', [false]],
+        ['(1 | 2) != (2 | 1)', [true]],
+        ['(1 | 2) = 1', [false]],
+    ])('%s', (expression, expected) => {
+        expect(evaluate(expression)).toEqual(expected);
+    });
+
+    test('an item gated on != stays hidden until the question it reads is answered', () => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const runtime = runtimeApi.mount({
+            container,
+            questionnaire: {
+                resourceType: 'Questionnaire',
+                status: 'active',
+                item: [
+                    { linkId: 'smoke', type: 'string', text: 'Do you smoke?' },
+                    {
+                        linkId: 'advice', type: 'display', text: 'Advice',
+                        extension: [{
+                            url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-enableWhenExpression',
+                            valueExpression: { language: 'text/fhirpath', expression: "%resource.item.where(linkId = 'smoke').answer.value != 'no'" },
+                        }],
+                    },
+                ],
+            },
+        });
+        expect(runtime.isEnabled('advice')).toBe(false);
+        runtime.setAnswers('smoke', [{ valueKey: 'valueString', value: 'yes' }]);
+        expect(runtime.isEnabled('advice')).toBe(true);
+        runtime.setAnswers('smoke', [{ valueKey: 'valueString', value: 'no' }]);
+        expect(runtime.isEnabled('advice')).toBe(false);
+    });
+});
+
 describe('functions', () => {
     test.each([
         ['(1 > 2).not()', [true]],
