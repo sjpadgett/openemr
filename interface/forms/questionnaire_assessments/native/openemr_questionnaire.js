@@ -1376,6 +1376,39 @@
                 });
             }
 
+            // R4: "Applications processing a resource are required to check for modifier
+            // extensions". One this runtime doesn't understand may change the meaning of the element
+            // it sits on, so the form isn't shown either. Contained resources are left to their use.
+            const modifiers = new Set();
+            const collectModifiers = (node) => {
+                if (Array.isArray(node)) {
+                    node.forEach(collectModifiers);
+                    return;
+                }
+                if (node === null || typeof node !== 'object') {
+                    return;
+                }
+                for (const extension of node.modifierExtension ?? []) {
+                    if (typeof extension?.url === 'string') {
+                        modifiers.add(extension.url);
+                    }
+                }
+                for (const [key, value] of Object.entries(node)) {
+                    if (key !== 'contained' && key !== 'modifierExtension' && value !== null && typeof value === 'object') {
+                        collectModifiers(value);
+                    }
+                }
+            };
+            collectModifiers(questionnaire);
+            compiled.unsupportedModifiers = [...modifiers].filter((url) => !supported.has(url.split('|')[0]));
+            for (const url of compiled.unsupportedModifiers) {
+                compiled.warnings.push({
+                    code: 'modifier-extension-unsupported',
+                    severity: 'error',
+                    message: 'This form has a modifier extension, ' + url + ', which this renderer does not understand, so it is not shown.',
+                });
+            }
+
             // A subQuestionnaire still here wasn't supplied by the host, so its part of the form is missing.
             for (const compiledItem of compiled.items) {
                 const canonical = findExtension(compiledItem.item, EXTENSIONS.SUB_QUESTIONNAIRE)?.valueCanonical;
@@ -4555,8 +4588,8 @@
             this.warningsNode.className = 'oe-questionnaire-warnings d-none';
             this.warningsNode.setAttribute('role', 'alert');
             container.appendChild(this.warningsNode);
-            if ((this.runtime.compiled.unsupportedCritical ?? []).length > 0) {
-                // The form says it can't be shown without these; show why, not the form.
+            if ((this.runtime.compiled.unsupportedCritical ?? []).length > 0 || (this.runtime.compiled.unsupportedModifiers ?? []).length > 0) {
+                // The form can't be shown safely without these; show why, not the form.
                 this.renderWarnings(this.runtime.collectWarnings());
                 return;
             }

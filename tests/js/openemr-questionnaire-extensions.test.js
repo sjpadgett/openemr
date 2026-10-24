@@ -62,6 +62,31 @@ describe('rendering-criticalExtension', () => {
     });
 });
 
+describe('modifierExtension', () => {
+    // R4: "Applications processing a resource are required to check for modifier extensions."
+    const unknown = { url: 'http://example.org/fhir/StructureDefinition/only-if-pregnant', valueBoolean: true };
+
+    test.each([
+        ['on the Questionnaire', { modifierExtension: [unknown], item: [{ linkId: 'q', type: 'string', text: 'Q' }] }],
+        ['on an item', { item: [{ linkId: 'q', type: 'string', text: 'Q', modifierExtension: [unknown] }] }],
+        ['on an answer option', { item: [{ linkId: 'q', type: 'choice', text: 'Q', answerOption: [{ valueString: 'A', modifierExtension: [unknown] }] }] }],
+    ])('one it does not understand, %s, stops the form and says why', (label, questionnaire) => {
+        const { container, runtime } = setup(questionnaire);
+        expect(container.querySelector('[data-link-id="q"]')).toBeNull();
+        expect(codes(runtime, 'modifier-extension-unsupported')).toHaveLength(1);
+        expect(container.querySelector('.oe-questionnaire-warnings').textContent).toContain('only-if-pregnant');
+    });
+
+    test('one inside a contained resource is left to whoever uses it', () => {
+        const { container, runtime } = setup({
+            contained: [{ resourceType: 'ValueSet', id: 'vs', status: 'active', modifierExtension: [unknown] }],
+            item: [{ linkId: 'q', type: 'string', text: 'Q' }],
+        });
+        expect(container.querySelector('[data-link-id="q"]')).not.toBeNull();
+        expect(codes(runtime, 'modifier-extension-unsupported')).toHaveLength(0);
+    });
+});
+
 describe('extensions not acted on', () => {
     test('one that changes what is captured is a visible warning, once, with its first item', () => {
         const candidate = { url: SDC + 'sdc-questionnaire-candidateExpression', valueExpression: { language: 'text/fhirpath', expression: "'x'" } };
