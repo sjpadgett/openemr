@@ -89,11 +89,12 @@ class ListEntryServicesDatabaseTest extends TestCase
 
     public function testAVisitKeepsItsOwnDiagnosesAndLosesOnlyTheWrongOnes(): void
     {
-        // A visit linked to a confirmed and an erroneous problem; another linked only to a refuted one.
+        // A visit linked to two confirmed problems and an erroneous one; another linked only to a refuted one.
         $kept = $this->entry('medical_problem', 'diagnosis', 'ICD10:I10', 'confirmed');
+        $alsoKept = $this->entry('medical_problem', 'diagnosis', 'ICD10:K21.9', 'confirmed');
         $wrong = $this->entry('medical_problem', 'diagnosis', 'ICD10:E11.9', 'entered-in-error');
         $refuted = $this->entry('medical_problem', 'diagnosis', 'ICD10:J45.909', 'refuted');
-        $this->visit(self::ENCOUNTER_KEPT, [$kept, $wrong]);
+        $this->visit(self::ENCOUNTER_KEPT, [$kept, $wrong, $alsoKept]);
         $this->visit(self::ENCOUNTER_REFUTED, [$refuted]);
 
         $result = (new EncounterService(new QdmRequestOne((string)self::PID), new CodeTypesService()))->executeQuery();
@@ -109,9 +110,9 @@ class ListEntryServicesDatabaseTest extends TestCase
         sort($rows);
 
         $this->assertSame(
-            [self::ENCOUNTER_KEPT . ' ICD10:I10', self::ENCOUNTER_REFUTED . ' -'],
+            [self::ENCOUNTER_KEPT . ' ICD10:I10;ICD10:K21.9', self::ENCOUNTER_REFUTED . ' -'],
             $rows,
-            'each visit once, with only the problems that count; a visit is never dropped for its problems',
+            'each visit once, with all the problems that count and none that do not; a visit is never dropped for its problems',
         );
     }
 

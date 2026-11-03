@@ -99,6 +99,38 @@ class OrderServicesDatabaseTest extends TestCase
         $this->assertSame(['active'], $this->codes(DeviceAppliedService::class, 'procedure_code'));
     }
 
+    public function testALabResultOrReportMarkedErrorIsNotRead(): void
+    {
+        $this->order('laboratory_test', 'final');
+        $this->order('laboratory_test', 'result-error', resultStatus: 'error');
+        $this->order('laboratory_test', 'report-error', reportStatus: 'error');
+
+        $this->assertSame(['final'], $this->codes(LaboratoryTestService::class, 'procedure_code'));
+    }
+
+    public function testAProcedureKeepsItselfButNotAResultMarkedError(): void
+    {
+        $this->order('order', 'final', resultStatus: 'final');
+        $this->order('order', 'result-error', resultStatus: 'error');
+        $this->order('order', 'report-error', resultStatus: 'final', reportStatus: 'error');
+
+        $this->assertSame(['final', 'report-error', 'result-error'], $this->codes(ProcedureService::class, 'procedure_code'));
+        $this->assertSame(['7.1'], $this->codes(ProcedureService::class, 'result_value', skipNull: true));
+    }
+
+    public function testEachLabResultIsReadWithItsOwnTestCode(): void
+    {
+        // One order of two tests, each with its own report and result.
+        $id = $this->order('laboratory_test', 'first');
+        QueryUtils::sqlInsert(
+            'INSERT INTO `procedure_order_code` (`procedure_order_id`, `procedure_order_seq`, `procedure_code`) VALUES (?, 2, ?)',
+            [$id, 'second'],
+        );
+        $this->reportAndResult($id, 2, '', '');
+
+        $this->assertSame(['first', 'second'], $this->codes(LaboratoryTestService::class, 'procedure_code'));
+    }
+
     public function testACarePlanItemWhoseFormWasDeletedFromTheVisitIsNotRead(): void
     {
         $this->carePlanItem(self::CARE_PLAN_FORM, 'kept');
@@ -118,13 +150,16 @@ class OrderServicesDatabaseTest extends TestCase
      * @param class-string<AbstractQdmService> $service
      * @return list<string> the column's value for each row the service reads, sorted
      */
-    private function codes(string $service, string $column): array
+    private function codes(string $service, string $column, bool $skipNull = false): array
     {
         $result = (new $service(new QdmRequestOne((string)self::PID), new CodeTypesService()))->executeQuery();
         $this->assertInstanceOf(\ADORecordSet::class, $result);
         $codes = [];
         while (is_array($row = QueryUtils::fetchArrayFromResultSet($result))) {
             $code = $row[$column] ?? null;
+            if ($skipNull && $code === null) {
+                continue;
+            }
             $this->assertIsString($code);
             $codes[] = $code;
         }
@@ -133,13 +168,20 @@ class OrderServicesDatabaseTest extends TestCase
     }
 
     /**
-     * An order of one code; a laboratory test gets a report and a result, which its service joins.
+     * An order of one code; a laboratory test, or an order given a result status, gets a report
+     * and a result, which the services join.
      *
      * @param 'kept'|'deleted'|null $form
      * @return int the order's id, which is its form's id
      */
-    private function order(string $type, string $code, int $activity = 1, ?string $form = null): int
-    {
+    private function order(
+        string $type,
+        string $code,
+        int $activity = 1,
+        ?string $form = null,
+        ?string $resultStatus = null,
+        string $reportStatus = '',
+    ): int {
         $id = QueryUtils::sqlInsert(
             "INSERT INTO `procedure_order` (`patient_id`, `encounter_id`, `date_ordered`, `procedure_order_type`, `activity`) VALUES (?, 0, '2026-03-02 09:00:00', ?, ?)",
             [self::PID, $type, $activity],
@@ -148,20 +190,25 @@ class OrderServicesDatabaseTest extends TestCase
             'INSERT INTO `procedure_order_code` (`procedure_order_id`, `procedure_order_seq`, `procedure_code`) VALUES (?, 1, ?)',
             [$id, $code],
         );
-        if ($type === 'laboratory_test') {
-            $report = QueryUtils::sqlInsert(
-                "INSERT INTO `procedure_report` (`procedure_order_id`, `procedure_order_seq`, `date_report`) VALUES (?, 1, '2026-03-03 09:00:00')",
-                [$id],
-            );
-            QueryUtils::sqlInsert(
-                "INSERT INTO `procedure_result` (`procedure_report_id`, `result_code`, `result`, `date`) VALUES (?, '4548-4', '7.1', '2026-03-03 09:00:00')",
-                [$report],
-            );
+        if ($type === 'laboratory_test' || $resultStatus !== null) {
+            $this->reportAndResult($id, 1, $reportStatus, $resultStatus ?? '');
         }
         if ($form !== null) {
             $this->form('procedure_order', $id, self::PID, deleted: $form === 'deleted');
         }
         return $id;
+    }
+
+    private function reportAndResult(int $orderId, int $seq, string $reportStatus, string $resultStatus): void
+    {
+        $report = QueryUtils::sqlInsert(
+            "INSERT INTO `procedure_report` (`procedure_order_id`, `procedure_order_seq`, `date_report`, `report_status`) VALUES (?, ?, '2026-03-03 09:00:00', ?)",
+            [$orderId, $seq, $reportStatus],
+        );
+        QueryUtils::sqlInsert(
+            "INSERT INTO `procedure_result` (`procedure_report_id`, `result_code`, `result`, `date`, `result_status`) VALUES (?, '4548-4', '7.1', '2026-03-03 09:00:00', ?)",
+            [$report, $resultStatus],
+        );
     }
 
     private function carePlanItem(int $formId, string $code): void

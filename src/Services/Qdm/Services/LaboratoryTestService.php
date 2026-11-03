@@ -38,8 +38,10 @@ class LaboratoryTestService extends AbstractQdmService implements QdmServiceInte
                     JOIN procedure_report REP ON RES.procedure_report_id = REP.procedure_report_id
                     JOIN procedure_order O ON REP.procedure_order_id = O.procedure_order_id
                     JOIN procedure_order_code OC ON O.procedure_order_id = OC.procedure_order_id
+                        AND OC.procedure_order_seq = REP.procedure_order_seq
                 WHERE O.procedure_order_type = 'laboratory_test' AND O.activity != 0
-                AND " . self::notInDeletedForm('O.procedure_order_id', 'O.patient_id', 'procedure_order') . "
+                AND RES.result_status <> 'error' AND REP.report_status <> 'error'
+                AND " . self::notInDeletedForm('O.procedure_order_id', 'O.patient_id', QdmForm::ProcedureOrder) . "
                 ";
 
         return $sql;

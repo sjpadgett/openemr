@@ -93,6 +93,9 @@ abstract class AbstractQdmService
     public function executeQuery()
     {
         $sql = $this->getSqlStatement();
+        if (!is_string($sql)) {
+            throw new \UnexpectedValueException(static::class . '::getSqlStatement() must return the SQL');
+        }
 
         $filterClause = $this->request->getFilter()->getFilterClause();
         if ($this->getPatientIdColumn() !== 'pid') {
@@ -101,7 +104,7 @@ abstract class AbstractQdmService
 
         // Apply the filter based on request type
         // If there's already a "WHERE" clause, then add an "AND" otherwise add our WHERE clause.
-        if (strpos(strtolower((string) $sql), 'where')) {
+        if (self::hasTopLevelWhere($sql)) {
             $sql .= " AND ( " . $filterClause . " )";
         } else {
             $sql .= " WHERE ( " . $filterClause . " )";
@@ -125,21 +128,36 @@ abstract class AbstractQdmService
     }
 
     /**
+     * Whether the query has a WHERE of its own, outside any parentheses. A WHERE inside a
+     * subquery or a parenthesized join (notInDeletedForm(), a nested JOIN) does not count:
+     * the patient filter appended after it would land in that join's ON clause instead.
+     */
+    public static function hasTopLevelWhere(string $sql): bool
+    {
+        // Drop parenthesized groups, innermost first, until none are left.
+        do {
+            $sql = preg_replace('/\([^()]*\)/', '', $sql, -1, $count) ?? '';
+        } while ($count > 0);
+
+        return preg_match('/\bwhere\b/i', $sql) === 1;
+    }
+
+    /**
      * SQL that is true unless the row's form was deleted from the visit: delete_form.php sets
      * forms.deleted = 1 and leaves the form's own rows in place. The form has to be the row's
      * patient's too, since form ids can repeat across patients (the procedure order and others
      * pick theirs with an unlocked MAX() + 1). A row with no forms row is kept.
      *
-     * @param string $formId  the column holding the row's form id, as it appears in the query
-     * @param string $pid     the column holding the row's patient, as it appears in the query
-     * @param string $formdir the form's directory, as forms.formdir records it
+     * @param string  $formId the column holding the row's form id, as it appears in the query
+     * @param string  $pid    the column holding the row's patient, as it appears in the query
+     * @param QdmForm $form   the form, whose directory forms.formdir records
      */
-    public static function notInDeletedForm(string $formId, string $pid, string $formdir): string
+    public static function notInDeletedForm(string $formId, string $pid, QdmForm $form): string
     {
         return "NOT EXISTS (
                     SELECT 1 FROM `forms`
                     WHERE `forms`.`form_id` = $formId AND `forms`.`pid` = $pid
-                      AND `forms`.`formdir` = '$formdir' AND `forms`.`deleted` = 1
+                      AND `forms`.`formdir` = '{$form->value}' AND `forms`.`deleted` = 1
                 )";
     }
 
