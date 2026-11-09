@@ -310,3 +310,29 @@ ALTER TABLE `oauth_clients` ADD COLUMN `address_book_uuid` binary(16) DEFAULT NU
 -- Unguarded so a rerun from before 7.0.1 also clears the require_once that upgrade sets back.
 UPDATE `background_services` SET `function` = 'OpenEMR\\Common\\DirectMessaging\\PhiMailReceiver::runBackgroundService', `require_once` = NULL
 WHERE `name` = 'phimail' AND (`function` = 'phimail_check' OR `require_once` = '/library/direct_message_check.inc.php');
+
+-- A Direct message's referral: the one a sent message carried, or the one a reply was matched to (#15137).
+#IfMissingColumn direct_message_log referral_id
+ALTER TABLE `direct_message_log` ADD COLUMN `referral_id` bigint(20) DEFAULT NULL COMMENT 'transactions.id of the referral a sent message carried, or a received reply was matched to', ADD KEY `referral_id` (`referral_id`);
+#EndIf
+
+#IfMissingColumn direct_message_log note_id
+ALTER TABLE `direct_message_log` ADD COLUMN `note_id` bigint(20) DEFAULT NULL COMMENT 'pnotes.id of the note a received message was filed as';
+#EndIf
+
+-- How a referral's recipient was told about their Task, or why they weren't (#15137).
+#IfNotTable referral_notice
+CREATE TABLE `referral_notice` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `transaction_id` bigint(20) NOT NULL COMMENT 'transactions.id of the referral',
+  `task_uuid` binary(16) NOT NULL COMMENT 'task.uuid of the Task the recipient was told about',
+  `outcome` varchar(31) NOT NULL COMMENT 'ReferralNoticeOutcome: how the recipient was told, or why they were not',
+  `address` varchar(255) DEFAULT NULL COMMENT 'the Direct or email address the notice went to',
+  `msg_id` varchar(127) DEFAULT NULL COMMENT 'direct_message_log.msg_id of a Direct notice, which carries its delivery status',
+  `detail` varchar(511) DEFAULT NULL COMMENT 'why a notice could not be sent',
+  `user_id` bigint(20) DEFAULT NULL COMMENT 'users.id of who saved the referral',
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `transaction_id` (`transaction_id`)
+) ENGINE=InnoDB;
+#EndIf
